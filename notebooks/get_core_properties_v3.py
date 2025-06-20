@@ -3,11 +3,9 @@ import numpy as np
 import pandas as pd
 import mesa_reader as mr
 import astropy.units as u
-import astropy.constants as ct
-import matplotlib.pyplot as plt
+import argparse
 
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from joblib import Parallel, delayed
 from tqdm import tqdm
 
 import sys
@@ -89,19 +87,28 @@ CORE_PROPS_FLOAT_COL_N = len(CORE_PROPS_HEADER) - CORE_PROPS_STR_COL_N - CORE_PR
 CORE_PROPS_DTYPES = ['str']*CORE_PROPS_STR_COL_N + ['float']*CORE_PROPS_FLOAT_COL_N + ['bool']*CORE_PROPS_BOOL_COL_N
 
 PHYSICAL_MODEL = "0_fiducial"
-MODEL_DICT_PATHS = {
+model_dict_paths = {
     '0.0005': MESA_DATA_ROOT/PHYSICAL_MODEL/'000_ZdivZsun_5d-4',
-    '0.005':  MESA_DATA_ROOT/PHYSICAL_MODEL/'001_ZdivZsun_5d-3',
-    '0.02':   MESA_DATA_ROOT/PHYSICAL_MODEL/'002_ZdivZsun_2d-2',
-    '0.05':   MESA_DATA_ROOT/PHYSICAL_MODEL/'003_ZdivZsun_5d-2',
-    '0.1':    MESA_DATA_ROOT/PHYSICAL_MODEL/'004_ZdivZsun_1d-1',
-    '0.2':    MESA_DATA_ROOT/PHYSICAL_MODEL/'005_ZdivZsun_2d-1',
-    '0.4':    MESA_DATA_ROOT/PHYSICAL_MODEL/'006_ZdivZsun_4d-1',
-    '0.6':    MESA_DATA_ROOT/PHYSICAL_MODEL/'007_ZdivZsun_6d-1',
-    '0.8':    MESA_DATA_ROOT/PHYSICAL_MODEL/'008_ZdivZsun_8d-1',
-    '1.0':    MESA_DATA_ROOT/PHYSICAL_MODEL/'009_ZdivZsun_1d0',
+    '0.0050':  MESA_DATA_ROOT/PHYSICAL_MODEL/'001_ZdivZsun_5d-3',
+    '0.0200':   MESA_DATA_ROOT/PHYSICAL_MODEL/'002_ZdivZsun_2d-2',
+    '0.0500':   MESA_DATA_ROOT/PHYSICAL_MODEL/'003_ZdivZsun_5d-2',
+    '0.1000':    MESA_DATA_ROOT/PHYSICAL_MODEL/'004_ZdivZsun_1d-1',
+    '0.2000':    MESA_DATA_ROOT/PHYSICAL_MODEL/'005_ZdivZsun_2d-1',
+    '0.4000':    MESA_DATA_ROOT/PHYSICAL_MODEL/'006_ZdivZsun_4d-1',
+    '0.6000':    MESA_DATA_ROOT/PHYSICAL_MODEL/'007_ZdivZsun_6d-1',
+    '0.8000':    MESA_DATA_ROOT/PHYSICAL_MODEL/'008_ZdivZsun_8d-1',
+    '1.0000':    MESA_DATA_ROOT/PHYSICAL_MODEL/'009_ZdivZsun_1d0',
 }
 
+def get_model_dict_paths(physical_model, prefix):
+    model_root = MESA_DATA_ROOT/physical_model
+    model_folders = model_root.glob(f'{prefix}*_ZdivZsun_*')
+    model_dict_paths = {}
+    for model_folder in model_folders:
+        z = float(model_folder.name.split('_')[2].replace('d', 'e'))
+        z_key = f'{z:.4f}'
+        model_dict_paths[z_key] = model_folder
+    return model_dict_paths
 
 y_0 = 0.4
 delta_y = 0.3
@@ -487,7 +494,7 @@ def read_system(model_path, z_key):
     
 def get_model_dicts():
     model_dicts = {}
-    for z_key, dict_path in zip(MODEL_DICT_PATHS.keys(), MODEL_DICT_PATHS.values()):
+    for z_key, dict_path in zip(model_dict_paths.keys(), model_dict_paths.values()):
         model_dict = load_models(dict_path)
         model_dicts[z_key] = model_dict
     return model_dicts
@@ -525,10 +532,32 @@ def get_core_props_df(n_processes):
     
     return core_props_df
 
-def main(n_processes):
-    core_props_df = get_core_props_df(n_processes)
-    core_props_df.to_hdf(DATA_ROOT/'core_props_df.h5', key='core_props_df', mode='w')
+def main():
+    parser = argparse.ArgumentParser(description='Get core properties from MESA models.')
+    
+    parser.add_argument('--n-cores', '-c', type=int, default=1, help='Number of cores to use')
+    parser.add_argument('--model', '-m', type=str, default='0_fiducial', help='Folder containing metallicity folders for same physics')
+    parser.add_argument('--model-prefix', '-p', type=str, default='0', help='Prefix for the models to collect')
+    parser.add_argument('--y0', '-y', type=float, default=0.4, help='He-poor to -rich transition start')
+    parser.add_argument('--delta-y', '-d', type=float, default=0.3, help='He-poor to -rich transition width')
+    
+    args = parser.parse_args()    
+    global y_0, delta_y, model_dict_paths
+    y_0 = args.y0
+    delta_y = args.delta_y
+    model = args.model
+    prefix = args.model_prefix
+    c = args.n_cores
+    print(f'Starting collection with {c} cores, for model {model}, prefix {prefix}, with y_0={y_0} and delta_y={delta_y}')
+    
+    model_dict_paths = get_model_dict_paths(model, prefix)
+    print((f'Found {len(model_dict_paths)} metallicity folders for model {model}, prefix {prefix}\n'
+           f'Z/Zsun = {list(model_dict_paths.keys())}'))
+        
+    core_props_df = get_core_props_df(c)
+    core_props_path = DATA_ROOT/f'{model}{prefix}_core_props_df.h5'
+    core_props_df.to_hdf(core_props_path, key='core_props_df', mode='w')
+    print(f'Saved core properties to {core_props_path}')
     
 if __name__ == '__main__':
-    n_processes = sys.argv[1] if len(sys.argv) > 1 else N_PROCESSES
-    main(n_processes=int(n_processes))    
+    main()    

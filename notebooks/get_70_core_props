@@ -1,0 +1,2 @@
+c=96
+srun -p cca -t 10:00:00 --ntasks 1 -c $c python get_core_properties_v3.py -c $c -m 7_other_am -p 0 -y 0.4 -d 0.3
