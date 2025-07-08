@@ -1,0 +1,6 @@
+This directory holds notebooks that have been considered redundant or obsolete after the last notebook
+revision and in the current naming scheme. They will remain here until all notebooks in the current
+scheme have been reviewed, in case code/data/plotting is found to be missing. Afterwards they will
+be deleted.
+
+Do not work in this directory. This is a TEMPORARY directory.
