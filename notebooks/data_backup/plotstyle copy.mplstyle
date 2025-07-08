@@ -1,0 +1,22 @@
+
+font.family: DejaVu Sans
+font.size: 28
+
+mathtext.rm: serif
+mathtext.it: serif:italic
+mathtext.bf: serif:bold
+mathtext.fontset: cm
+
+xtick.labelsize: 18
+xtick.major.size: 10
+xtick.major.width: 1
+ytick.labelsize: 18
+ytick.major.size: 10
+ytick.major.width: 1
+
+axes.labelsize: 28
+axes.titlesize: 28
+
+lines.linewidth: 2
+
+legend.fontsize: 22
