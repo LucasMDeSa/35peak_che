@@ -13,9 +13,10 @@ import mesa_reader as mr
 
 # Definitions
 ## Paths
-CODE_ROOT = Path('/mnt/home/ldesa/repos/cher')
-DATA_ROOT = CODE_ROOT/'data'
-MESA_DATA_ROOT = Path('/mnt/ceph/users/ldesa/mesa_che_grids/sse_production')
+ROOT = Path('/mnt/home/ldesa/repos/cher')
+DATA_DIR = ROOT/'data'
+MESA_DATA_DIR = Path('/mnt/ceph/users/ldesa/mesa_che_grids/sse_production')
+NB_OUTPUT_DIR = ROOT/'notebooks/output' 
 
 # Constants
 Z_SUN = 0.017
