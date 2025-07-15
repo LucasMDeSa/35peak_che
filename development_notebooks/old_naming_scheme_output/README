@@ -1,0 +1,6 @@
+This folder holds figures produce within the previous notebook naming/numbering scheme. 
+That scheme was inconsistent and full of repeated plots/code over different notebooks. There is no
+way to translate from the new to the old systems. The figures here will be deleted or otherwise 
+stored long-term once all notebooks in the new naming shceme have been run and cleaned.
+
+Figures within the current naming scheme can be found in the output folder.

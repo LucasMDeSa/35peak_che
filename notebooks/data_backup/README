@@ -1,7 +1,0 @@
-This directory holds input and output data files from before the current notebook naming scheme and 
-from before the current storage scheme (../output and ../../data directories). These files will 
-remain here until all notebooks in the new scheme have been tested. Files that are still loaded 
-will be moved to the appropriate subdirectories within the input directory. The rest will be 
-deleted.
-
-Do not load files FROM this directory. This is a TEMPORARY directory.
