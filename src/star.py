@@ -7,18 +7,12 @@ import astropy.units as u
 import astropy.constants as ct
 from astropy.cosmology import WMAP9 as cosmo
 
-from .constants import MASS_U, PERIOD_U, AGE_U, SMA_U, RADIUS_U, TEMP_U, LUMINOSITY_U, Z_SUN, T_H
+from .constants import MASS_U, PERIOD_U, AGE_U, SMA_U, RADIUS_U, TEMP_U, LUMINOSITY_U, Z_SUN, t_h
+from .util import DATA_DIR, fix_unit
 
 
 #### FUNCTIONS ####
 #### Utilities ####
-def fix_unit(var, unit):
-    """If a variable is passed without a unit, set it to *unit*."""
-    if type(var) != u.quantity.Quantity:
-        var *= unit
-    else:
-        pass
-    return var
 
 def p_from_a(a, m, q):
     a = fix_unit(a, SMA_U)
@@ -61,6 +55,10 @@ def get_x_y(z):
     y = 1 - x - z
     return x, y 
 
+def edd_gamma(l, m, x):
+    return 10**-4.817 * (1+x) * l/m
+
+
 # Binary geometry #
 
 
@@ -88,6 +86,7 @@ def tau_es(m, r, l, omega, metallicity=Z_SUN):
     m = fix_unit(m, MASS_U)
     r = fix_unit(r, RADIUS_U)
     l = fix_unit(l, LUMINOSITY_U)
+    omega = fix_unit(omega, 1/u.s)
     _tau_kh = tau_kh(m, r, l, metallicity)
     tau_es = _tau_kh * ct.G * m / (omega**2 * r**3)   
     return tau_es.to(AGE_U)
@@ -152,7 +151,7 @@ class ToutMassRadiusRelation:
         self._set_coefficients()
 
     def _load_fit_params(self):
-        self.fit_params = np.genfromtxt('tout_zams_mrr', skip_header=True, usecols=(1, 2, 3, 4, 5))
+        self.fit_params = np.genfromtxt(DATA_DIR/'other_data/tout_zams_mrr', skip_header=True, usecols=(1, 2, 3, 4, 5))
     
     def _set_coefficients(self):
         met_factor = np.array([np.log10(self.metallicity/Z_SUN)**i for i in range(5)])
@@ -180,7 +179,7 @@ class ToutMassLuminosityRelation:
         self._set_coefficients()
 
     def _load_fit_params(self):
-        self.fit_params = np.genfromtxt('tout_zams_mlr', skip_header=True, usecols=(1, 2, 3, 4, 5))
+        self.fit_params = np.genfromtxt(DATA_DIR/'other_data/tout_zams_mlr', skip_header=True, usecols=(1, 2, 3, 4, 5))
     
     def _set_coefficients(self):
         met_factor = np.array([np.log10(self.metallicity/Z_SUN)**i for i in range(5)])
@@ -302,6 +301,77 @@ class GormazMatamalaWinds:
         
         return log_mdot
     
+## Grafener et al. (2011) mass-radius and -luminosity relations
+
+def grafener_l_to_m_h_burning(l, x):
+    """Equations 11, 12 from Gräfener et al. (2011).
+    
+    From relations 11, 12 and 13 in Table A.1 Switch at logL=6.5 is from
+    Sabhahit et al. (2023).
+    """
+    
+    FF11 = [4.026, 4.277, -1.0, 25.48, 36.93, -2.792, -3.226, -5.317, 1.648]
+    FF12 = [2.582, 0.829, -1.0, 9.375, 0.333, 0.543, -1.376, -0.049, 0.036] 
+    FF13 = [10.05, 8.204, -1.0, 151.7, 254.5, -11.46 ,-13.16, -31.68, 2.408]
+
+    if l < 10.**6.5:
+        FF = FF11
+    else:
+        FF = FF13
+    f = FF[3] + FF[4]*x + FF[5]*x*x + (FF[6] + FF[7]*x) * np.log10(l)
+    logm = (FF[0] + FF[1]*x + FF[2]*np.sqrt(f)) / (1 + FF[8]*x)
+    m  = 10.**logm
+  
+    return m
+
+def grafener_m_to_l_h_burning(m, x):
+    """Equation 9 from Gräfener et al. (2011).
+    
+    From relations 1, 2 and 3 in Table A.1 Switch at logL=6.5 is from
+    Sabhahit et al. (2023).
+    """
+    FF1 = [2.875, -3.966, 2.496, 2.652, -0.310, -0.511]
+    FF2 = [1.967, -2.943, 3.755, 1.206, -0.727, -0.026]
+    FF3 = [3.862, -2.486, 1.527, 1.247, -0.076, -0.183]
+    
+    FF = FF1
+    log_l = (FF[0] + FF[1]*x
+             + (FF[2] + FF[3]*x) * np.log10(m)
+             + (FF[4] + FF[5]*x) * np.log10(m)**2)
+    if log_l > 6.5:
+        FF = FF3
+        log_l = (FF[0] + FF[1]*x
+             + (FF[2] + FF[3]*x) * np.log10(m)
+             + (FF[4] + FF[5]*x) * np.log10(m)**2)
+    return 10.**log_l
+
+
+def grafener_l_to_m_he_burning(l):
+    """Equation 18 from Gräfener et al. (2011).
+    
+    From relations 17, 16 and 18 in Table A.1 Switch at logL=6.5 is from
+    Sabhahit et al. (2023).
+    """
+    
+    FF = [8.177, -1.0, 105.5, -10.10] # 18
+    #FF = [3.997, -1.0, 25.83, -3.268] # 16
+    #FF = [3.059, -1.0, 14.76, -2.049] # 17
+    logm = FF[0] + FF[1] * np.sqrt(FF[2] + FF[3] * np.log10(l))
+    return 10.**logm
+
+def grafener_m_to_l_he_burning(m):
+    """Equation 10 from Gräfener et al. (2011).
+    
+    From relations 6, 7, and 8 in Table A.1 Switch at logL=6.5 is from
+    Sabhahit et al. (2023).
+    """
+    #FF = [3.017, 2.446, -0.306] # 6
+    #FF = [3.017, 2.446, -0.306] # 7
+    FF = [3.826, 1.619, -0.099] # 8
+    log_l = FF[0] + FF[1]*np.log10(m) + FF[2]*np.log10(m)**2
+    return 10.**log_l
+    
+# WINDS
 class SanderWinds:
     """Wolf-Rayet winds from Sanders&Vink20 and Sanders+23.
     

@@ -18,9 +18,6 @@ DATA_DIR = ROOT/'data'
 MESA_DATA_DIR = Path('/mnt/ceph/users/ldesa/mesa_che_grids/sse_production')
 NB_OUTPUT_DIR = ROOT/'notebooks/output' 
 
-# Constants
-Z_SUN = 0.017
-
 # Colormaps
 
 def build_bump35_cmap(vmin=10., vmax=100., vcenter=35., base_cmap=cm.seismic):
@@ -37,8 +34,8 @@ def build_logbump35_cmap(vmin=1., vmax=2., vcenter=1.54, base_cmap=cm.seismic):
 
 def fix_unit(var, unit):
     """If a variable is passed without a unit, set it to *unit*."""
-    if type(var) != u.quantity.Quantity:
-        var *= unit
+    if not isinstance(var, u.quantity.Quantity):
+        var = var * unit
     else:
         pass
     return var
@@ -99,6 +96,16 @@ def get_model_dict(grid_folder):
 
 def load_models(project_folder):
     model_folders = list(project_folder.glob('*_md*_m*_zsundiv*_*y0_*dy'))
+    _model_dicts = np.array([get_model_dict(folder) for folder in model_folders])
+    model_dicts = dict()
+    for dicts in _model_dicts:
+        for m in dicts.keys():
+            if m not in model_dicts.keys():
+                model_dicts[m] = dicts[m]
+    return model_dicts
+
+def load_models2(project_folder):
+    model_folders = list(project_folder.glob('[0-9][0-9][0-9]_m*'))
     _model_dicts = np.array([get_model_dict(folder) for folder in model_folders])
     model_dicts = dict()
     for dicts in _model_dicts:

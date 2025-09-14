@@ -58,7 +58,7 @@ complete discussion of wind recipes.
            InterpolatorV2, high resolution (1e8) interpolated sample.  
            Again found ~35 Msun peak for Zsun/10.
 - `32` - Fifth grid. Variations on the fifth grid for higher metallicities, leading to many crashes.  
-           First check that CHE models were not hitting Pi.
+           First check that CHE models were not hitting the pair instability strip.
 - `33` - Sixth grid. First attempt to generalize Fifth Grid to metallicities other than Zsun/10.  
            Reduced number of stars per metallicity to 120 instead of 720, and had succesful runs for  
            0.2, 0.4 and 0.6 Zsun. 0.8 and 1.0 Zsun crashed during H shell burning expansion.  

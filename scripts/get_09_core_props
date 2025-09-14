@@ -1,0 +1,2 @@
+c=96
+srun -p gen -t 10:00:00 --ntasks 1 -c $c python get_core_properties_v4.py -c $c -m 09_early_wind_transition -p 09 -y 0.3 -d 0.3

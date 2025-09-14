@@ -12,5 +12,5 @@ LUMINOSITY_U = u.Lsun
 DENSITY_U = u.g / u.cm**3
 OMEGA_U = 1 / u.s
 
-Z_SUN = 0.02
+Z_SUN = 0.017
 t_h = cosmo.age(0).to(u.yr).value

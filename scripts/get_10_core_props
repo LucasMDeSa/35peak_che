@@ -1,0 +1,2 @@
+c=96
+srun -p gen -t 10:00:00 --ntasks 1 -c $c python get_core_properties_v4.py -c $c -m 10_inefficient_mix -p 10 -y 0.4 -d 0.3

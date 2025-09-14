@@ -10,8 +10,9 @@ import mesa_reader as mr
 
 import sys
 sys.path.append('..')
-from src.star import fix_unit
-from src.constants import (MASS_U, SMA_U, PERIOD_U, OMEGA_U, RADIUS_U)
+from src.star import fix_unit, grafener_m_to_l_h_burning
+from src.constants import (MASS_U, SMA_U, PERIOD_U, OMEGA_U, RADIUS_U, Z_SUN)
+from src.winds import sander2023_l_w, bjorklund2023_w
 
 def eggleton_rl1_radius(a, q):
     """Primary Roche lobe-equivalent radius, from Eggletion (1983)."""
@@ -145,5 +146,70 @@ class WindIntegrator:
             else:
                 t0 = self.time[i]
                 mdot = self.mdot[i]
+        
+        return m, p, a, q, t1
+    
+class SV20WindIntegrator:
+    
+    def __init__(self, tau_ms, m0, a0, q0=1, dm=1., teff=10.**4.75, z=Z_SUN, x=0.7) -> None:
+        self.tau_ms = tau_ms
+        self.m0 = m0
+        self.a0 = a0
+        self.q0 = q0
+        self.dm = dm
+        self.teff = teff
+        self.z = z
+        self.p0 = p_from_a(self.a0, self.m0, self.q0).to(u.d).value
+        self.w0 = 2*np.pi / (self.p0 * u.d.to(u.s))        
+        self.x = x
+        self.l0 = grafener_m_to_l_h_burning(self.m0, x=x)
+        
+    @staticmethod
+    def a_from_p(p, m, q):
+        p = fix_unit(p, u.d)
+        m = fix_unit(m, u.Msun)
+        a = np.cbrt(ct.G * (1+q) * m / (4*np.pi**2) * p**2)
+        a = a.to(u.Rsun).value
+        return a
+        
+    @staticmethod
+    def p_from_a(a, m, q):
+        a = fix_unit(a, u.Rsun)
+        m = fix_unit(m, u.Msun)
+        p = np.sqrt(4 * np.pi**2 / (ct.G * (1+q) * m) * a**3)
+        p = p.to(u.d).value
+        return p
+    
+    def integrate(self, t_target):
+        t_target = min(t_target, self.tau_ms)
+        m = self.m0
+        p = self.p0
+        q = self.q0
+        a = self.a0
+        l = self.l0
+        
+        i = 0
+        t0 = 0.
+        t1 = 0.
+        while t1 < t_target:
+            dm = -self.dm
+            # 10% boost from rotation
+            mdot = -1 * max((
+                sander2023_l_w(l, self.teff, self.z),
+                bjorklund2023_w(l, m, self.teff, self.z, x=self.x)
+            ))
+            dt = dm/mdot
+            t1 = t0 + dt
+            da = -2/(1+q) * dm/m * a
+            dq = 0
+            
+            m += dm
+            a += da
+            q += dq
+            p = self.p_from_a(a, m, q)
+            l = grafener_m_to_l_h_burning(m, x=self.x)
+            
+            i += 1
+            t0 = t1
         
         return m, p, a, q, t1
