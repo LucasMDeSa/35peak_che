@@ -1,8 +1,8 @@
 from pathlib import Path
 import numpy as np
 
-CODE_ROOT = Path('/mnt/home/ldesa/repos/cher')
-DATA_ROOT = Path('/mnt/ceph/users/ldesa/mesa_che_grids')
+CODE_ROOT = Path('~/repos/cher')
+DATA_ROOT = Path('~/ceph/mesa_che_grids')
 
 def get_model_folder(model_id, project_folder, verbose=True):
     """Finds model folder given its id."""
