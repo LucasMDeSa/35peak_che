@@ -15,7 +15,7 @@ import mesa_reader as mr
 ## Paths
 ROOT = Path('~/repos/cher')
 DATA_DIR = ROOT/'data'
-MESA_DATA_DIR = Path('~/ceph/mesa_che_grids/sse_production')
+MESA_DATA_DIR = Path('/mnt/home/ldesa/ceph/mesa_che_grids/sse_production')
 NB_OUTPUT_DIR = ROOT/'notebooks/output' 
 
 # Colormaps
