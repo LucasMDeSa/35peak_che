@@ -1,0 +1,7 @@
+=== Starting Benchmark Run: v1 ===
+Output Directory: ../data/nb_output/nbxx/benchmark_v1
+Logging Output To: ../data/nb_output/nbxx/benchmark_v1/benchmark_20260311_154735.log
+
+==================================================
+ EXPERIMENT 1: RANDOM K-FOLD SPARSITY BENCHMARK
+==================================================

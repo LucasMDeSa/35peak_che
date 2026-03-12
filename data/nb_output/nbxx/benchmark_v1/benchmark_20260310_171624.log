@@ -1,0 +1,86 @@
+=== Starting Benchmark Run: v1 ===
+Output Directory: ../data/nb_output/nbxx/benchmark_v1
+Logging Output To: ../data/nb_output/nbxx/benchmark_v1/benchmark_20260310_171624.log
+
+[+] Found cached Experiment 1 results. Skipping compute...
+
+=== RANDOM BENCHMARK SUMMARY (CACHED) ===
+      phys_rmse        interp_rmse        interp_nan_frac
+           mean    std        mean    std            mean
+frac                                                     
+0.025     1.026  0.083       0.811  0.063           0.001
+0.050     0.983  0.080       0.742  0.083           0.001
+0.100     0.919  0.084       0.637  0.093           0.001
+0.250     0.810  0.105       0.416  0.084           0.001
+0.500     0.745  0.105       0.260  0.096           0.001
+0.750     0.716  0.113       0.194  0.075           0.001
+1.000     0.699  0.116       0.154  0.079           0.001
+
+==================================================
+ EXPERIMENT 1B: STRUCTURED GRID COARSENING
+==================================================
+
+--- Evaluating at Stride 1 ---
+  (Stride 1: Evaluating baseline on the full dense grid itself)
+  Physical Model RMSE : 0.866 M_sun
+  Interpolator RMSE   : 0.002 M_sun
+  Interpolator Fails  : 0.1% (Returned NaN)
+
+--- Evaluating at Stride 2 (P) ---
+  Training points: 925 | Holdout points: 914
+  Physical Model RMSE : 0.857 M_sun
+  Interpolator RMSE   : 0.134 M_sun
+  Interpolator Fails  : 15.1% (Returned NaN)
+
+--- Evaluating at Stride 2 (P, M) ---
+  Training points: 530 | Holdout points: 1309
+  Physical Model RMSE : 0.867 M_sun
+  Interpolator RMSE   : 0.160 M_sun
+  Interpolator Fails  : 20.2% (Returned NaN)
+
+--- Evaluating at Stride 2 (All) ---
+  Training points: 297 | Holdout points: 1542
+  Physical Model RMSE : 0.859 M_sun
+  Interpolator RMSE   : 1.766 M_sun
+  Interpolator Fails  : 25.7% (Returned NaN)
+
+--- Evaluating at Stride 3 (All) ---
+  Training points: 91 | Holdout points: 1748
+  Physical Model RMSE : 0.886 M_sun
+  Interpolator RMSE   : 2.377 M_sun
+  Interpolator Fails  : 45.5% (Returned NaN)
+
+--- Evaluating at Stride 4 (All) ---
+  Training points: 73 | Holdout points: 1766
+  Physical Model RMSE : 0.939 M_sun
+  Interpolator RMSE   : 4.919 M_sun
+  Interpolator Fails  : 51.2% (Returned NaN)
+
+--- Evaluating at Stride 5 (All) ---
+  Training points: 46 | Holdout points: 1793
+  Physical Model RMSE : 1.058 M_sun
+  Interpolator RMSE   : 6.778 M_sun
+  Interpolator Fails  : 68.7% (Returned NaN)
+
+=== COARSENING BENCHMARK SUMMARY ===
+    stride_name  train_size  test_size  phys_rmse  interp_rmse  interp_nan_frac
+       Stride 1        1839       1839      0.866        0.002            0.001
+   Stride 2 (P)         925        914      0.857        0.134            0.151
+Stride 2 (P, M)         530       1309      0.867        0.160            0.202
+ Stride 2 (All)         297       1542      0.859        1.766            0.257
+ Stride 3 (All)          91       1748      0.886        2.377            0.455
+ Stride 4 (All)          73       1766      0.939        4.919            0.512
+ Stride 5 (All)          46       1793      1.058        6.778            0.687
+
+[+] Found cached Experiment 2 metrics. Skipping compute...
+
+=== STRUCTURED GRID TEST RESULTS (CACHED) ===
+  Physical Model RMSE : 1.001 M_sun
+  Interpolator RMSE   : 2.072 M_sun
+  Interpolator Fails  : 91.0% (Returned NaN)
+
+[+] Saving/Updating benchmark artifacts in: ../data/nb_output/nbxx/benchmark_v1/
+  -> Checked/Saved CSVs
+  -> Checked/Saved Metrics JSON
+  -> Checked/Saved Interpolator Model (Pickle)
+[+] Save/Update complete!
