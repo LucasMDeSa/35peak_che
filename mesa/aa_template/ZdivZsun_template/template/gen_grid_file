@@ -1,0 +1,13 @@
+#!/bin/bash
+
+m=20
+output_file="input_grid"
+input_file="period_grid"
+
+echo "m/Msun omega/rad_s-1 P/d" > $output_file
+
+while read -r p_d; do
+	p_s=$(echo "scale=8; $p_d * 86400" | bc -l)
+	omega=$(echo "scale=8; 2 * 4*a(1) / $p_s" | bc -l)
+	printf "%.3e,%.3e,%.3e\n" $m $omega $p_d >> $output_file
+done < $input_file

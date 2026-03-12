@@ -1,0 +1,8 @@
+#!/bin/bash
+rm input_grid run_grid
+rm -r m*_wi*
+rm run_grid_disBatch_*
+rm slurm*
+rm m*_w*.log
+rm -r m*_w*
+rm period_grid

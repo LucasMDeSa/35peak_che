@@ -1,0 +1,14 @@
+#!/bin/bash
+
+source_folder=$1
+destination_folder=$2
+
+mkdir $destination_folder
+cp $source_folder/README $destination_folder/
+cp $source_folder/clean $destination_folder/
+cp $source_folder/cp_model $destination_folder/
+cp $source_folder/dispatch_grid $destination_folder/
+cp $source_folder/mass_grid $destination_folder/
+cp $source_folder/mk_grid $destination_folder/
+cp $source_folder/period_grid $destination_folder/
+cp -r $source_folder/template $destination_folder/

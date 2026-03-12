@@ -1,0 +1,74 @@
+&star_job
+
+! For single stars turn on rotation at ZAMS
+new_rotation_flag                    = .true.
+change_rotation_flag                 = .false.  ! rotation off until near zams
+new_omega = 10 ! rad s-1
+
+near_zams_relax_omega = .true.
+num_steps_to_relax_rotation          = 20  ! use this many steps to change value
+relax_omega_max_yrs_dt               = 1d3 ! << MS lifetime
+
+change_D_omega_flag                  = .true.
+new_D_omega_flag                     = .true.
+
+pgstar_flag                          = .false.
+pause_before_terminate               = .false.
+
+new_net_name                         = 'mesa_128.net' !"approx21_cr56.net" !  !
+
+/ ! end of star_job namelist
+
+&eos
+/ ! end of eos namelist
+
+
+&kap
+/ ! end of kap namelist
+
+
+&controls
+
+initial_mass                         = 40d0
+log_directory                        = 'LOGS'
+write_header_frequency               = 10
+terminal_interval                    = 1
+
+! zams
+! Define ZAMS, MESA default if 0.9d0
+! Winds are only turned on at ZAMS to avoid m_zams<inital_mass
+Lnuc_div_L_zams_limit = 0.9d0
+
+! output
+max_num_profile_models               = 10000
+write_profiles_flag                  = .true.
+profile_interval                     = 500
+photo_interval                       = 500
+history_interval                     = 1
+
+! debug
+! report_ierr                        = .true.
+
+! use_other_am_mixing                  = .true.
+! am_nu_ST_factor                      = 0.0d0
+
+x_ctrl(1)                            = 1.0d0
+x_ctrl(2)                            = 10.5d0  ! s threshold for velocity, may be overwritten by co_core_mass if smaller
+
+use_other_mesh_functions             = .true.  ! improve resolution of gradients
+x_ctrl(3)                            = 1.0d0   ! weight for resolving gradients
+
+use_other_wind                       = .true. ! custom wind prescrition
+
+x_ctrl(4)                            = 1d-15 ! run will terminate if timestep < x_ctrl(4)*t_kh
+
+x_ctrl(5)                            = 0.6  ! start of He-poor->He-rich wind transition in terms of X_surf (Y0)
+x_ctrl(6)                            = 0.3  ! width of He-poor->He-rich wind transition in terms of X_surf (Delta Y)
+x_ctrl(7)                            = 0.0  ! multiply He-rich winds by a factor M^x_ctrl(7) (beta)
+x_ctrl(8)                            = 0.0  ! multiply He-rich winds by a factor (Z/Zsun)^x_ctrl(8) (gamma)
+x_ctrl(9)                            = 1.0  ! multiply He-rich winds by a factor x_ctrl(9) (Mdot_r)
+
+x_character_ctrl(1) = 'bjorklund+krticka' ! He-poor wind option: vink, bjorklund, krticka, bjorklund+krticka (min of both)
+x_character_ctrl(2) = 'bjorklund+krticka' ! He-poor thin->thick transition scheme, changes what G_switch fit is used
+
+/ ! end of controls namelist

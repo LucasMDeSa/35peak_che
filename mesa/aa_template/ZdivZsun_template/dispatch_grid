@@ -1,0 +1,4 @@
+#!/bin/bash
+module load disBatch 
+
+sbatch --partition cca --ntasks 160 --cpus-per-task --time 03-00:00:00 --mail-type ALL --mail-user lucasmdesa@usp.br disBatch run_grid

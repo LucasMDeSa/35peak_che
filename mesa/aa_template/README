@@ -1,0 +1,30 @@
+# This folder follows a common structure for setting up ZxMxP MESA grids 
+# in this project. All models will follow the MESA physics set in the 
+# ZdivZsun_template/template/MESA_input_src folder.
+# Edit the inlists and run_star_extras.f90 there before generating the 
+# grid. Do not forget to run ./mk in MESA_input_src if you modify the 
+# run_star_extras.f90
+
+# Once you have set up MESA_input_src, define for your grid:
+# the metallicites over solar in z_div_zsun_grid,
+# the ZAMS masses (Msun) in ZdivZsun_template/mass_grid,
+# the ZAMS spin periods (d) in ZdivZsun_template/period_grid.
+
+# Then run mk_grid to generate your grid. One folder for each 
+# metallicity will be generated, but not the individual MESA inputs. To 
+# generate MESA inputs, run ./mk_grid within each metallicity folder. 
+# Check the README therein.
+# Alternatively, you may uncomment lines 27-29 in ./mk_grid to 
+# automatically generate the MESA input folders.
+
+# There is currently no automatic generation of batch run scripts for 
+# the full metallicity grids, only for individual metallicities. You 
+# must individually dispatch the execution of each metallicity grid. 
+# Check the README in the metallicity folders.
+
+# Calling mk_grid will also produce PHYSICS_README, listing changes in
+# the inlists, run_star_extras.f90, and MESA history/profile columns 
+# relative to x_template.
+
+# If you need to modify the MESA settings, run ./clean to restore the 
+# folder to its original configuration, then edit ZdivZsun_template.

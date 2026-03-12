@@ -1,0 +1,22 @@
+# This folder follows a common structure for setting up MxP MESA grids 
+# in this project. All models will follow the MESA physics set in the 
+# template/MESA_input_src folder.
+# Edit the inlists and run_star_extras.f90 there before generating the 
+# grid. Do not forget to run ./mk in MESA_input_src if you modify the 
+# run_star_extras.f90
+
+# Run mk_grid to generate your grid. One folder for each mass will be 
+# generated, within which will be the folders for individual periods. 
+# This will also produce run_grid, a list of command lines that can be 
+# submitted to slurm to run the whole grid; and dispatch_grid, a command 
+# line to submit run_grid to slurm through disBatch. 
+# (see https://github.com/flatironinstitute/disBatch)
+
+# If you have disBatch installed, simply call ./dispatch_grid
+# Otherwise check the sbatch command in dispatch_grid 
+
+# If you need to modify the MESA settings, run ./clean to restore the 
+# folder to its original configuration.
+
+# Individual models can also be run from inside the mass-specific 
+# folders. See ./template/README for further instructions.

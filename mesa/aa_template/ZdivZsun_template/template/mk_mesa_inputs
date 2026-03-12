@@ -1,0 +1,22 @@
+#!/bin/bash
+input_grid=$(tail -n +2 input_grid)
+grid_output="run_grid"
+
+for line in $input_grid; do
+	arr=(${line//,/ })
+	mass=(${arr[0]//e/d})
+	w=(${arr[1]//e/d})
+	p=(${arr[2]//e/d})
+	target_folder="m${mass}_p${p}_w${w}"
+	mkdir $target_folder 
+	cp -r "MESA_input_src"/* $target_folder
+	sed -i -e "s/initial_mass                         = 40d0/initial_mass                         = ${mass}/g" $target_folder/inlist1
+	sed -i -e "s/new_omega = 10 ! rad s-1/new_omega = ${w} ! rad s-1/g" $target_folder/inlist1
+
+	cd $target_folder
+	chmod +777 clean mk rn
+	cd ..
+	echo "(cd $target_folder ; ./rn) &> $target_folder.log" >> $grid_output
+
+	echo "Wrote MESA input for m=${mass} Msun, w=${w} rad/s"
+done

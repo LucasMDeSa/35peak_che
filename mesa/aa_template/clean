@@ -1,0 +1,5 @@
+#!/bin/bash
+rm -r *_ZdivZsun_*
+rm PHYSICS_README
+rm run_grid_disBatch*
+rm slurm*

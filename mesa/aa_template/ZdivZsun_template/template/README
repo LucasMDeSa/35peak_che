@@ -1,0 +1,22 @@
+# This folder is setup to run multiple MESA models for a fixed M_ZAMS 
+# and varying P_ZAMS. To use it on its own, create a period_grid file 
+# like the one in the parent directory, and define the m variable (Msun)
+# in ./gen_grid_file.
+
+# After setting up the mass and periods, run ./gen_grid_file to generate 
+# the input_grid file,
+# and then ./mk_mesa_inputs to generate folders with the MESA setup for 
+# each period. 
+# This will also generate the run_grid file, which can be submitted to 
+# slurm to run all models, and dispatch_grid, which will submit run_grid
+# to slurm through disBatch.
+# (see https://github.com/flatironinstitute/disBatch)
+
+# If you have disBatch installed, simply call ./dispatch_grid
+# Otherwise check the sbatch command in dispatch_grid 
+
+# You may also use the period-specific folders as individual MESA 
+# models, and run them with ./rn 
+
+# To restore this folder to its original state, run ./clean. 
+# Note that this will also delete period_grid.

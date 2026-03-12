@@ -1,0 +1,4 @@
+
+#!/bin/bash
+module load disBatch
+sbatch --partition cca  --ntasks 36 --cpus-per-task 16 --time=00-10:00:00 --mail-type=ALL --mail-user=ldesa@flatironinstitute.org disBatch run_grid

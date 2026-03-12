@@ -1,0 +1,12 @@
+#!/bin/bash
+
+source_folder=$1
+destination_folder=$2
+
+mkdir $destination_folder
+cp -r $source_folder/MESA_input_src $destination_folder/
+cp $source_folder/README $destination_folder/
+cp $source_folder/dispatch_grid $destination_folder/
+cp $source_folder/gen_grid_file $destination_folder/
+cp $source_folder/mk_mesa_inputs $destination_folder/
+cp $source_folder/clean $destination_folder/

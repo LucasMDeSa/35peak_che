@@ -1,0 +1,50 @@
+#!/bin/bash
+
+input_grid="mass_grid"
+output_grid="run_grid"
+template_folder="template"
+template_folder_name="000_m20"
+touch $output_grid
+
+counter=000
+printf "Creating mass, period grid\n"
+while read -r mass; do
+	# create folders
+	counter=$((counter+1))
+	id=$(printf "%03d\n" "$counter")
+	new_folder_name=$(echo $template_folder_name | sed -r "s/000/${id}/g" | sed -r "s/m20/m${mass}/g")
+	./cp_model $template_folder $new_folder_name
+	cp period_grid $new_folder_name/
+
+	# set mass
+	sed -i -e "s/m=20/m=${mass}/g" $new_folder_name/gen_grid_file
+	# create grid over period
+	cd $new_folder_name
+	./gen_grid_file
+	./mk_mesa_inputs
+	cd ..
+
+	printf "Wrote grid for m=${mass} Msun\n"
+
+	printf "Appending to disBatch file\n"
+	model_folder_arr=$(echo $new_folder_name/m*_w*)
+	for folder in $model_folder_arr; do
+		echo "(cd $folder ; ./rn) &> $folder.log" >> $output_grid
+	done
+	printf "Done with disBatch file\n\n"
+done < $input_grid
+printf "Finished writing mass, period grid\n"
+
+printf "Generating dispatch_grid and MODEL_README\n"
+n_mass=$(wc -l < $input_grid)
+n_period=$(wc -l < "period_grid")
+n_tasks=$((n_mass * n_period))
+partition="cca"
+runtime="07-00:00:00"
+mail_type="ALL"
+mail_user="lucasmdesa@usp.br"
+disbatch_command="sbatch --partition ${partition} --ntasks ${n_tasks} --cpus-per-task ${OMP_NUM_THREADS} --time ${runtime} --mail-type ${mail_type} --mail-user ${mail_user} disBatch ${output_grid}"
+echo "#!/bin/bash" > "dispatch_grid"
+echo -e "module load disBatch \n" >> "dispatch_grid"
+echo $disbatch_command >> "dispatch_grid"
+printf "Done\n"

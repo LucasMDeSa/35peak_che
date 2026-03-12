@@ -1,0 +1,38 @@
+#!/bin/bash
+output_file="PHYSICS_README"
+
+echo -e "Diff for inlist" > $output_file
+echo -e "--------------------" >> $output_file
+diff "${MESA_WORKING_DIR}/aa_template/ZdivZsun_template/template/MESA_input_src/inlist" "./ZdivZsun_template/template/MESA_input_src/inlist" >> $output_file
+echo -e "====================\n">> $output_file
+
+echo -e "Diff for inlist1" >> $output_file
+echo -e "--------------------" >> $output_file
+diff "${MESA_WORKING_DIR}/aa_template/ZdivZsun_template/template/MESA_input_src/inlist1" "./ZdivZsun_template/template/MESA_input_src/inlist1" >> $output_file
+echo -e "====================\n" >> $output_file
+
+echo -e "Diff for inlist_both" >> $output_file
+echo -e "--------------------" >> $output_file
+diff "${MESA_WORKING_DIR}/aa_template/ZdivZsun_template/template/MESA_input_src/inlist_both" "./ZdivZsun_template/template/MESA_input_src/inlist_both" >> $output_file
+echo -e "====================\n" >> $output_file
+
+echo -e "Diff for inlist_pgstar" >> $output_file
+echo -e "--------------------" >> $output_file
+diff "${MESA_WORKING_DIR}/aa_template/ZdivZsun_template/template/MESA_input_src/inlist_pgstar" "./ZdivZsun_template/template/MESA_input_src/inlist_pgstar" >> $output_file
+echo -e "====================\n" >> $output_file
+
+echo -e "Diff for run_star_extras.f90" >> $output_file
+echo -e "--------------------" >> $output_file
+diff "${MESA_WORKING_DIR}/aa_template/ZdivZsun_template/template/MESA_input_src/src/run_star_extras.f90" "./ZdivZsun_template/template/MESA_input_src/src/run_star_extras.f90" >> $output_file
+echo -e "====================\n" >> $output_file
+
+echo -e "Diff for history_columns.list" >> $output_file
+echo -e "--------------------" >> $output_file
+diff "${MESA_WORKING_DIR}/aa_template/ZdivZsun_template/template/MESA_input_src/history_columns.list" "./ZdivZsun_template/template/MESA_input_src/history_columns.list" >> $output_file
+echo -e "====================\n" >> $output_file
+
+echo -e "Diff for profile_columns.list" >> $output_file
+echo -e "--------------------" >> $output_file
+diff "${MESA_WORKING_DIR}/aa_template/ZdivZsun_template/template/MESA_input_src/profile_columns.list" "./ZdivZsun_template/template/MESA_input_src/profile_columns.list" >> $output_file
+echo -e "====================\n" >> $output_file
+

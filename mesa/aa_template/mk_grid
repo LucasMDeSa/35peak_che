@@ -1,0 +1,36 @@
+#!/bin/bash
+
+zsun=0.017
+input_grid="z_div_zsun_grid"
+template_folder="ZdivZsun_template"
+
+parent=$(basename "$PWD")
+physics_id="${parent%%_*}"
+counter=00
+printf "Creating metallicity grid\n"
+while read -r z_div_zsun; do
+    id=$(printf "%02d\n" "$counter")
+    z=$(echo "scale=8; $z_div_zsun * $zsun" | bc -l)
+    z_str=$(printf "%.2e" "$z")
+    z_str=${z_str/e/d}
+    z_div_zsun_id=$(printf "%.0e" "$z_div_zsun")
+    z_div_zsun_id=${z_div_zsun_id/e/d}
+    target_folder="${physics_id}${id}_ZdivZsun_${z_div_zsun_id}"
+
+    ./cp_model $template_folder $target_folder
+    inlist_both=$target_folder/template/MESA_input_src/inlist_both
+    sed -i -e "s/new_Z                                     = 0.0017d0/new_Z                                     = ${z_str}/g" $inlist_both
+    sed -i -e "s/Zbase                                     = 0.0017d0/Zbase                                     = ${z_str}/g" $inlist_both
+
+    # uncomment the lines below to automatically generated the M, P
+    # grids for every metallicity
+    # cd $target_folder
+    # ./mk_grid
+    # cd ..
+
+    printf "Wrote to %s\n" "$target_folder"
+    counter=$((counter+1))
+done < $input_grid
+
+./gen_diff
+printf "Finished writing metallicity grid\n"

@@ -1,0 +1,6 @@
+#!/bin/bash
+rm -r *_md*_m*_zsundiv*_*y0_*dy
+rm run_grid
+rm slurm*
+rm run_grid_disBatch*
+rm model_diff
