@@ -7,26 +7,39 @@ import astropy.units as u
 import astropy.constants as ct
 from astropy.cosmology import WMAP9 as cosmo
 
-from .constants import MASS_U, PERIOD_U, AGE_U, SMA_U, RADIUS_U, TEMP_U, LUMINOSITY_U, Z_SUN, t_h
+from .constants import (
+    MASS_U,
+    PERIOD_U,
+    AGE_U,
+    SMA_U,
+    RADIUS_U,
+    TEMP_U,
+    LUMINOSITY_U,
+    Z_SUN,
+    t_h,
+)
 from .util import DATA_DIR, fix_unit
 
 
 #### FUNCTIONS ####
 #### Utilities ####
 
+
 def p_from_a(a, m, q):
     a = fix_unit(a, SMA_U)
     m = fix_unit(m, MASS_U)
-    p = np.sqrt(4 * np.pi**2 / (ct.G * (1+q) * m) * a**3)
+    p = np.sqrt(4 * np.pi**2 / (ct.G * (1 + q) * m) * a**3)
     p = p.to(PERIOD_U)
     return p
+
 
 def a_from_p(p, m, q):
     p = fix_unit(p, PERIOD_U)
     m = fix_unit(m, MASS_U)
-    a = np.cbrt(ct.G * (1+q) * m / (4*np.pi**2) * p**2)
+    a = np.cbrt(ct.G * (1 + q) * m / (4 * np.pi**2) * p**2)
     a = a.to(SMA_U)
     return a
+
 
 ## Physical relations ##
 # Stellar parameters #
@@ -37,26 +50,29 @@ def log_g(m, r, metallicity=Z_SUN):
     log_g = np.log10(g.value)
     return log_g
 
+
 def t_eff(l, r, metallicity=Z_SUN):
     l = fix_unit(l, LUMINOSITY_U)
     r = fix_unit(r, RADIUS_U)
-    t_eff = l / (4*np.pi*r**2 * ct.sigma_sb)
-    t_eff = t_eff**(1/4)
+    t_eff = l / (4 * np.pi * r**2 * ct.sigma_sb)
+    t_eff = t_eff ** (1 / 4)
     return t_eff.to(TEMP_U)
+
 
 def get_x_y(z):
     """Get X and Y as functions of Z.
-    
+
     Interpolate between Big Bang and solar composition to get X and Y as
     functions of Z.
     """
-    
-    x = 0.75 - 5/2 * z
+
+    x = 0.75 - 5 / 2 * z
     y = 1 - x - z
-    return x, y 
+    return x, y
+
 
 def edd_gamma(l, m, x):
-    return 10**-4.817 * (1+x) * l/m
+    return 10**-4.817 * (1 + x) * l / m
 
 
 # Binary geometry #
@@ -73,23 +89,26 @@ def tau_ms(m, l, metallicity=Z_SUN):
     t_ms = f_core * x * delta_4h_he4 * m * ct.c**2 / l
     return t_ms.to(AGE_U)
 
+
 def tau_kh(m, r, l, metallicity=Z_SUN):
     """Thermal timescale."""
     m = fix_unit(m, MASS_U)
     r = fix_unit(r, RADIUS_U)
     l = fix_unit(l, LUMINOSITY_U)
-    tau_kh = ct.G * m**2 / (2*r*l)   
+    tau_kh = ct.G * m**2 / (2 * r * l)
     return tau_kh.to(AGE_U)
+
 
 def tau_es(m, r, l, omega, metallicity=Z_SUN):
     """Eddington-Sweet timescale."""
     m = fix_unit(m, MASS_U)
     r = fix_unit(r, RADIUS_U)
     l = fix_unit(l, LUMINOSITY_U)
-    omega = fix_unit(omega, 1/u.s)
+    omega = fix_unit(omega, 1 / u.s)
     _tau_kh = tau_kh(m, r, l, metallicity)
-    tau_es = _tau_kh * ct.G * m / (omega**2 * r**3)   
+    tau_es = _tau_kh * ct.G * m / (omega**2 * r**3)
     return tau_es.to(AGE_U)
+
 
 def tau_sync_turb(m, r, p, q, metallicity=Z_SUN, f_turb=1):
     """Turbulent viscosity synchronization timescale."""
@@ -97,35 +116,40 @@ def tau_sync_turb(m, r, p, q, metallicity=Z_SUN, f_turb=1):
     r = fix_unit(r, RADIUS_U)
     p = fix_unit(p, PERIOD_U)
     a = a_from_p(p, m, q)
-    tau_turb = f_turb * q**-2 * (r/a)**-6 * u.yr
+    tau_turb = f_turb * q**-2 * (r / a) ** -6 * u.yr
     return tau_turb.to(AGE_U)
+
 
 def t_sync_rad(m, r, p, q, metallicity=Z_SUN):
     """Placeholder for radiative damping synchronization timescale."""
     return
-    
-def tau_mix(m, r, p, q, metallicity=Z_SUN, mode='turbulent'):
+
+
+def tau_mix(m, r, p, q, metallicity=Z_SUN, mode="turbulent"):
     """Mixing timescale.
-    
-    Defined as the sum of the Eddington-Sweet timescale and either the 
+
+    Defined as the sum of the Eddington-Sweet timescale and either the
     turbulent viscosity (default) or radiative damping timescale.
     """
-    
+
     m = fix_unit(m, MASS_U)
     p = fix_unit(p, PERIOD_U)
     r = fix_unit(r, RADIUS_U)
 
-    if mode == 'turbulent':
+    if mode == "turbulent":
         tau_sync = tau_sync_turb(m, r, p, q, metallicity=metallicity)
-    elif mode == 'radiative':
+    elif mode == "radiative":
         tau_sync = tau_sync_rad(m, r, p, q, metallicity=metallicity)
     else:
-        raise ValueError(f'Mode should be either "turbulent" or "radiative", not "{mode}".')
-    
-    taues = tau_es(m, r, 2*np.pi/p, metallicity=metallicity)
+        raise ValueError(
+            f'Mode should be either "turbulent" or "radiative", not "{mode}".'
+        )
+
+    taues = tau_es(m, r, 2 * np.pi / p, metallicity=metallicity)
 
     taumix = (taues + tau_sync).to(AGE_U)
-    return taumix    
+    return taumix
+
 
 def tau_gw(m, p, q):
     """Gravitational decay timescale."""
@@ -134,7 +158,7 @@ def tau_gw(m, p, q):
     a = a_from_p(p, m, q)
 
     _c = 5 * ct.c**5 / 256 / ct.G**3
-    tgw = _c * a**4 / (m**3 * q *(1+q))
+    tgw = _c * a**4 / (m**3 * q * (1 + q))
     return tgw.to(AGE_U)
 
 
@@ -151,12 +175,18 @@ class ToutMassRadiusRelation:
         self._set_coefficients()
 
     def _load_fit_params(self):
-        self.fit_params = np.genfromtxt(DATA_DIR/'other_data/tout_zams_mrr', skip_header=True, usecols=(1, 2, 3, 4, 5))
-    
+        self.fit_params = np.genfromtxt(
+            DATA_DIR / "other_data/tout_zams_mrr",
+            skip_header=True,
+            usecols=(1, 2, 3, 4, 5),
+        )
+
     def _set_coefficients(self):
-        met_factor = np.array([np.log10(self.metallicity/Z_SUN)**i for i in range(5)])
+        met_factor = np.array(
+            [np.log10(self.metallicity / Z_SUN) ** i for i in range(5)]
+        )
         met_factor = np.tile(met_factor, (10, 1))
-        met_factor[-2] = np.ones(5)/5
+        met_factor[-2] = np.ones(5) / 5
         self.coefficients = self.fit_params * met_factor
         self.coefficients = np.sum(self.coefficients, axis=1)
 
@@ -167,7 +197,7 @@ class ToutMassRadiusRelation:
         radius = np.sum(terms[:5]) / np.sum(terms[5:])
         return radius * u.Rsun
 
-        
+
 class ToutMassLuminosityRelation:
     """Mass-radius relation at ZAMS from Tout et al. (1996)."""
 
@@ -179,12 +209,18 @@ class ToutMassLuminosityRelation:
         self._set_coefficients()
 
     def _load_fit_params(self):
-        self.fit_params = np.genfromtxt(DATA_DIR/'other_data/tout_zams_mlr', skip_header=True, usecols=(1, 2, 3, 4, 5))
-    
+        self.fit_params = np.genfromtxt(
+            DATA_DIR / "other_data/tout_zams_mlr",
+            skip_header=True,
+            usecols=(1, 2, 3, 4, 5),
+        )
+
     def _set_coefficients(self):
-        met_factor = np.array([np.log10(self.metallicity/Z_SUN)**i for i in range(5)])
+        met_factor = np.array(
+            [np.log10(self.metallicity / Z_SUN) ** i for i in range(5)]
+        )
         met_factor = np.tile(met_factor, (8, 1))
-        met_factor[-2] = np.ones(5)/5
+        met_factor[-2] = np.ones(5) / 5
         self.coefficients = self.fit_params * met_factor
         self.coefficients = np.sum(self.coefficients, axis=1)
 
@@ -194,18 +230,18 @@ class ToutMassLuminosityRelation:
         terms = self.coefficients * m**indices
         luminosity = np.sum(terms[:2]) / np.sum(terms[2:])
         return luminosity * u.Lsun
-    
-    
+
+
 class HurleyMassRadiusRelation:
     """Mass-radius relation at ZA-HeMS from Hurley et al. (2000)."""
 
     def __init__(self, metallicity=Z_SUN):
         self.metallicity = metallicity
-        
+
     @staticmethod
     def tau_he_ms(m):
         m = fix_unit(m, MASS_U).to(MASS_U).value
-        coefficients = np.array([0.4129, 18.81, 1.853, 1]) 
+        coefficients = np.array([0.4129, 18.81, 1.853, 1])
         indices = np.array([0, 4, 6, 6.5])
         terms = coefficients * m**indices
         return np.sum(terms[:3]) / np.sum(terms[3:]) * u.Myr
@@ -225,12 +261,12 @@ class HurleyMassRadiusRelation:
     def radius(self, m, t=0):
         m = fix_unit(m, MASS_U)
         t = fix_unit(t, AGE_U)
-        tau = (t/self.tau_he_ms(m)).value
+        tau = (t / self.tau_he_ms(m)).value
         beta = self._beta(m)
         r_zams = self.zams_radius(m)
-        return (1 + beta*tau - beta*tau**6) * r_zams
-    
-    
+        return (1 + beta * tau - beta * tau**6) * r_zams
+
+
 class HurleyMassLuminosityRelation:
     """Mass-luminosity relation at ZA-HeMS from Hurley et al. (2000)."""
 
@@ -240,7 +276,7 @@ class HurleyMassLuminosityRelation:
     @staticmethod
     def tau_he_ms(m):
         m = fix_unit(m, MASS_U).to(MASS_U).value
-        coefficients = np.array([0.4129, 18.81, 1.853, 1]) 
+        coefficients = np.array([0.4129, 18.81, 1.853, 1])
         indices = np.array([0, 4, 6, 6.5])
         terms = coefficients * m**indices
         return np.sum(terms[:3]) / np.sum(terms[3:]) * u.Myr
@@ -260,11 +296,12 @@ class HurleyMassLuminosityRelation:
     def luminosity(self, m, t=0):
         m = fix_unit(m, MASS_U)
         t = fix_unit(t, AGE_U)
-        tau = (t/self.tau_he_ms(m)).value
+        tau = (t / self.tau_he_ms(m)).value
         alpha = self._alpha(m)
         l_zams = self.zams_luminosity(m)
-        return (1 + 0.45*tau + alpha*tau**2) * l_zams
-    
+        return (1 + 0.45 * tau + alpha * tau**2) * l_zams
+
+
 ## Winds ##
 class GormazMatamalaWinds:
     """Main sequence winds from Gormaz-Matamala et al. (2020)."""
@@ -281,7 +318,7 @@ class GormazMatamalaWinds:
     def _set_spline(self):
         masses = np.logspace(np.log10(self.m_min), np.log10(self.m_max), 30)
         logmdots = np.array([self.log_mass_loss_rate(m) for m in masses])
-        self.spline = CubicSpline(masses, logmdots)        
+        self.spline = CubicSpline(masses, logmdots)
 
     def log_mass_loss_rate(self, m):
         m = fix_unit(m, MASS_U).to(u.Msun).value
@@ -289,94 +326,112 @@ class GormazMatamalaWinds:
         r = self.mrr.radius(m)
         teff = t_eff(l, r, self.metallicity)
         logg = log_g(m, r, self.metallicity)
-        
-        w = np.log10(teff.to(u.kK).value)
-        x = 1/logg
-        y = r.to(u.Rsun).value
-        z = np.log10(self.metallicity/Z_SUN)
 
-        log_mdot = (-40.314 + 15.438*w + 45.838*x - 8.284*w*x
-                    + 1.0564*y - w*y/2.36 - 1.1967*x*y
-                    + z * (0.4 + 15.75/m))
-        
+        w = np.log10(teff.to(u.kK).value)
+        x = 1 / logg
+        y = r.to(u.Rsun).value
+        z = np.log10(self.metallicity / Z_SUN)
+
+        log_mdot = (
+            -40.314
+            + 15.438 * w
+            + 45.838 * x
+            - 8.284 * w * x
+            + 1.0564 * y
+            - w * y / 2.36
+            - 1.1967 * x * y
+            + z * (0.4 + 15.75 / m)
+        )
+
         return log_mdot
-    
+
+
 ## Grafener et al. (2011) mass-radius and -luminosity relations
+
 
 def grafener_l_to_m_h_burning(l, x):
     """Equations 11, 12 from Gräfener et al. (2011).
-    
+
     From relations 11, 12 and 13 in Table A.1 Switch at logL=6.5 is from
     Sabhahit et al. (2023).
     """
-    
-    FF11 = [4.026, 4.277, -1.0, 25.48, 36.93, -2.792, -3.226, -5.317, 1.648]
-    FF12 = [2.582, 0.829, -1.0, 9.375, 0.333, 0.543, -1.376, -0.049, 0.036] 
-    FF13 = [10.05, 8.204, -1.0, 151.7, 254.5, -11.46 ,-13.16, -31.68, 2.408]
 
-    if l < 10.**6.5:
+    FF11 = [4.026, 4.277, -1.0, 25.48, 36.93, -2.792, -3.226, -5.317, 1.648]
+    FF12 = [2.582, 0.829, -1.0, 9.375, 0.333, 0.543, -1.376, -0.049, 0.036]
+    FF13 = [10.05, 8.204, -1.0, 151.7, 254.5, -11.46, -13.16, -31.68, 2.408]
+
+    if l < 10.0**6.5:
         FF = FF11
     else:
         FF = FF13
-    f = FF[3] + FF[4]*x + FF[5]*x*x + (FF[6] + FF[7]*x) * np.log10(l)
-    logm = (FF[0] + FF[1]*x + FF[2]*np.sqrt(f)) / (1 + FF[8]*x)
-    m  = 10.**logm
-  
+    f = FF[3] + FF[4] * x + FF[5] * x * x + (FF[6] + FF[7] * x) * np.log10(l)
+    logm = (FF[0] + FF[1] * x + FF[2] * np.sqrt(f)) / (1 + FF[8] * x)
+    m = 10.0**logm
+
     return m
+
 
 def grafener_m_to_l_h_burning(m, x):
     """Equation 9 from Gräfener et al. (2011).
-    
+
     From relations 1, 2 and 3 in Table A.1 Switch at logL=6.5 is from
     Sabhahit et al. (2023).
     """
     FF1 = [2.875, -3.966, 2.496, 2.652, -0.310, -0.511]
     FF2 = [1.967, -2.943, 3.755, 1.206, -0.727, -0.026]
     FF3 = [3.862, -2.486, 1.527, 1.247, -0.076, -0.183]
-    
+
     FF = FF1
-    log_l = (FF[0] + FF[1]*x
-             + (FF[2] + FF[3]*x) * np.log10(m)
-             + (FF[4] + FF[5]*x) * np.log10(m)**2)
+    log_l = (
+        FF[0]
+        + FF[1] * x
+        + (FF[2] + FF[3] * x) * np.log10(m)
+        + (FF[4] + FF[5] * x) * np.log10(m) ** 2
+    )
     if log_l > 6.5:
         FF = FF3
-        log_l = (FF[0] + FF[1]*x
-             + (FF[2] + FF[3]*x) * np.log10(m)
-             + (FF[4] + FF[5]*x) * np.log10(m)**2)
-    return 10.**log_l
+        log_l = (
+            FF[0]
+            + FF[1] * x
+            + (FF[2] + FF[3] * x) * np.log10(m)
+            + (FF[4] + FF[5] * x) * np.log10(m) ** 2
+        )
+    return 10.0**log_l
 
 
 def grafener_l_to_m_he_burning(l):
     """Equation 18 from Gräfener et al. (2011).
-    
+
     From relations 17, 16 and 18 in Table A.1 Switch at logL=6.5 is from
     Sabhahit et al. (2023).
     """
-    
-    FF = [8.177, -1.0, 105.5, -10.10] # 18
-    #FF = [3.997, -1.0, 25.83, -3.268] # 16
-    #FF = [3.059, -1.0, 14.76, -2.049] # 17
+
+    FF = [8.177, -1.0, 105.5, -10.10]  # 18
+    # FF = [3.997, -1.0, 25.83, -3.268] # 16
+    # FF = [3.059, -1.0, 14.76, -2.049] # 17
     logm = FF[0] + FF[1] * np.sqrt(FF[2] + FF[3] * np.log10(l))
-    return 10.**logm
+    return 10.0**logm
+
 
 def grafener_m_to_l_he_burning(m):
     """Equation 10 from Gräfener et al. (2011).
-    
+
     From relations 6, 7, and 8 in Table A.1 Switch at logL=6.5 is from
     Sabhahit et al. (2023).
     """
-    #FF = [3.017, 2.446, -0.306] # 6
-    #FF = [3.017, 2.446, -0.306] # 7
-    FF = [3.826, 1.619, -0.099] # 8
-    log_l = FF[0] + FF[1]*np.log10(m) + FF[2]*np.log10(m)**2
-    return 10.**log_l
-    
+    # FF = [3.017, 2.446, -0.306] # 6
+    # FF = [3.017, 2.446, -0.306] # 7
+    FF = [3.826, 1.619, -0.099]  # 8
+    log_l = FF[0] + FF[1] * np.log10(m) + FF[2] * np.log10(m) ** 2
+    return 10.0**log_l
+
+
 # WINDS
 class SanderWinds:
     """Wolf-Rayet winds from Sanders&Vink20 and Sanders+23.
-    
-    Wind prescription for Wolf-Rayet and binary-stripped helium stars 
-    from Sanders & Vink (2020), with temperature correction for 
+
+    Wind prescription for Wolf-Rayet and binary-stripped helium stars
+    from Sanders & Vink (2020), with temperature correction for
     Teff > 1e5 K from Sanders et al. (2023).
     """
 
@@ -391,71 +446,75 @@ class SanderWinds:
     @property
     def alpha(self):
         return self._alpha
-    
+
     @alpha.setter
     def alpha(self, metallicity):
-        self._alpha = 0.32 * np.log10(metallicity/Z_SUN) + 1.4
+        self._alpha = 0.32 * np.log10(metallicity / Z_SUN) + 1.4
 
     @property
     def luminosity0(self):
         return self._luminosity0
-    
+
     @luminosity0.setter
     def luminosity0(self, metallicity):
-        log_luminosity0 = -0.87 * np.log10(metallicity/Z_SUN) + 5.06
+        log_luminosity0 = -0.87 * np.log10(metallicity / Z_SUN) + 5.06
         self._luminosity0 = 10**log_luminosity0 * u.Lsun
 
     @property
     def dot_m10(self):
         return self._dot_m10
-    
+
     @dot_m10.setter
     def dot_m10(self, metallicity):
-        log_dot_m10 = -0.75 * np.log10(metallicity/Z_SUN) - 4.06
+        log_dot_m10 = -0.75 * np.log10(metallicity / Z_SUN) - 4.06
         self._dot_m10 = 10**log_dot_m10 * u.Msun / u.yr
-
 
     def _vs2020_winds(self, m):
         m = fix_unit(m, MASS_U)
         luminosity = self.mlr.luminosity(m)
-        return self.dot_m10 * np.log10(luminosity/self.luminosity0)**self.alpha * (luminosity / (10*self.luminosity0))**(3/4)
-    
+        return (
+            self.dot_m10
+            * np.log10(luminosity / self.luminosity0) ** self.alpha
+            * (luminosity / (10 * self.luminosity0)) ** (3 / 4)
+        )
+
     def log_mass_loss_rate(self, m):
         m = fix_unit(m, MASS_U)
         l = self.mlr.luminosity(m)
         r = self.mrr.radius(m)
         teff = t_eff(l, r, metallicity=self.metallicity)
         if l < self.luminosity0:
-            log_mass_loss_rate = -20.
+            log_mass_loss_rate = -20.0
         elif teff > 1e5 * u.K:
-            log_vs2020_rate = np.log10(self._vs2020_winds(m).to(u.Msun/u.yr).value)
-            
+            log_vs2020_rate = np.log10(self._vs2020_winds(m).to(u.Msun / u.yr).value)
+
             log_mass_loss_rate = log_vs2020_rate
         else:
-            log_vs2020_rate = np.log10(self._vs2020_winds(m).to(u.Msun/u.yr).value)
-            t_corr = 6 * np.log10(teff.to(u.kK).value/141)
+            log_vs2020_rate = np.log10(self._vs2020_winds(m).to(u.Msun / u.yr).value)
+            t_corr = 6 * np.log10(teff.to(u.kK).value / 141)
             log_mass_loss_rate = log_vs2020_rate - t_corr
         return log_mass_loss_rate
-            
+
 
 ## BINARY EVOLUTION ##
 
+
 class WindIntegrator:
     """Evolve mass and separation with wind mass & ang. momentum loss.
-    
-    Assumes fast (Jeans mode) mass loss. Depends on prescriptions for 
+
+    Assumes fast (Jeans mode) mass loss. Depends on prescriptions for
     winds, MLR and MRR. Work with any class implementations that include
-    
+
     * a ```log_mass_loss_rate(m)``` method for winds,
-    * a ```luminosity(m)``` method for the mass-luminosity relation 
+    * a ```luminosity(m)``` method for the mass-luminosity relation
       (MLR),
     * a ```radius(m)``` method for the mass-radius relation (MRR).
-    
-    Assumes those classes take *metallicity* as an initialization 
+
+    Assumes those classes take *metallicity* as an initialization
     argument.
-    
+
     Evolves primary mass and semi-major axis on timesteps of width *dt*.
-    *dt* is updated at each step so that :attr:```resolution``` Msun is 
+    *dt* is updated at each step so that :attr:```resolution``` Msun is
     lost every timestep. By default, ```resolution```=1.
     """
 
@@ -471,18 +530,18 @@ class WindIntegrator:
         self.dt = self._get_dt(m0)
 
     def _get_dt(self, m):
-        mdot = 10.**self.wind.log_mass_loss_rate(m) * u.Msun/u.yr
-        time_to_lose_res_msun = self.resolution * ct.M_sun/mdot
+        mdot = 10.0 ** self.wind.log_mass_loss_rate(m) * u.Msun / u.yr
+        time_to_lose_res_msun = self.resolution * ct.M_sun / mdot
         return time_to_lose_res_msun.to(u.yr).value
 
     def _get_next_m(self, m):
-        dm = 10.**self.wind.log_mass_loss_rate(m) * self.dt
+        dm = 10.0 ** self.wind.log_mass_loss_rate(m) * self.dt
         return m - dm
-    
+
     def _get_next_a(self, a, m):
-        dm = 10.**self.wind.log_mass_loss_rate(m) * self.dt
+        dm = 10.0 ** self.wind.log_mass_loss_rate(m) * self.dt
         q = self.m_comp / m
-        da = - -2 / (1+q) * dm / m * a
+        da = --2 / (1 + q) * dm / m * a
         return a + da
 
     def get_m_a_at(self, t_stop):
@@ -503,58 +562,60 @@ class WindIntegrator:
         self.dt = dt0
 
         return m, a
-    
-    
+
+
 def get_tams(m_zams, a_zams, q_zams, mixed_wind_model_dict, resolution=1):
     """Evolve a binary from ZAMS to TAMS w/ wind mass/ang. m. loss.
-    
-    Takes mass, semi-major axis mass_ratio (<=1) at ZAMS. Evolves the 
-    binary with two instances of :class:```~star.WindIntegrator```. For 
-    t<=t_mix, uses main sequence winds from 
-    :class:```~star.GormazMatamalaWinds```, and for t>t_mix uses 
-    Wolf-Rayet-like winds from :class:```~star.SandersWinds```. 
-    Returns parameters at t=t_ms. If t_ms<=t_mix, then only main 
+
+    Takes mass, semi-major axis mass_ratio (<=1) at ZAMS. Evolves the
+    binary with two instances of :class:```~star.WindIntegrator```. For
+    t<=t_mix, uses main sequence winds from
+    :class:```~star.GormazMatamalaWinds```, and for t>t_mix uses
+    Wolf-Rayet-like winds from :class:```~star.SandersWinds```.
+    Returns parameters at t=t_ms. If t_ms<=t_mix, then only main
     sequence winds are applied.
-    
-    Wolf-Rayet winds use the MRR and MLR specified in 
-    *mixed_wind_model_dict*. Three options are implemented for arbitrary 
+
+    Wolf-Rayet winds use the MRR and MLR specified in
+    *mixed_wind_model_dict*. Three options are implemented for arbitrary
     metallicity (see individual docs): :func:```~star.ms_model_dict```,
-    :func:```~star.mixed_model_dict``` and 
+    :func:```~star.mixed_model_dict``` and
     :func:```~star.he_model_dict```.
     """
-    
-    z = mixed_wind_model_dict['metallicity']
+
+    z = mixed_wind_model_dict["metallicity"]
     p_zams = p_from_a(a_zams, m_zams, q_zams)
 
     unmixed_wind_model_dict = ms_model_dict(z)
-    unmixed_winds = WindIntegrator(a0=a_zams,
-                                   m0=m_zams,
-                                   q0=q_zams,
-                                   resolution=resolution,
-                                   **unmixed_wind_model_dict)
-    tmix = tau_mix(m=m_zams,
-                   p=p_zams,
-                   q=q_zams,
-                   r=unmixed_winds.mrr.radius(m_zams),
-                   metallicity=z,
-                   mode='turbulent')
+    unmixed_winds = WindIntegrator(
+        a0=a_zams,
+        m0=m_zams,
+        q0=q_zams,
+        resolution=resolution,
+        **unmixed_wind_model_dict,
+    )
+    tmix = tau_mix(
+        m=m_zams,
+        p=p_zams,
+        q=q_zams,
+        r=unmixed_winds.mrr.radius(m_zams),
+        metallicity=z,
+        mode="turbulent",
+    )
     tms = tau_ms(m_zams, z)
-    
+
     if tmix >= tms:
         m_tams, a_tams = unmixed_winds.get_m_a_at(tms)
         q_tams = q_zams * m_zams / m_tams
         p_tams = p_from_a(a_tams, m_tams, q_tams)
-    
+
     else:
         m_mix, a_mix = unmixed_winds.get_m_a_at(tmix)
         q_mix = q_zams * m_zams / m_mix
 
-        mixed_winds = WindIntegrator(a0=a_mix,
-                                    m0=m_mix,
-                                    q0=q_mix,
-                                    resolution=resolution,
-                                    **mixed_wind_model_dict)
-        
+        mixed_winds = WindIntegrator(
+            a0=a_mix, m0=m_mix, q0=q_mix, resolution=resolution, **mixed_wind_model_dict
+        )
+
         ttams = tms - tmix
 
         m_tams, a_tams = mixed_winds.get_m_a_at(ttams)
@@ -563,42 +624,56 @@ def get_tams(m_zams, a_zams, q_zams, mixed_wind_model_dict, resolution=1):
 
     return m_tams, a_tams, p_tams, q_tams
 
+
 def ms_model_dict(metallicity):
     """Return model dict with HMS MLR and MRR."""
-    return dict(wind=GormazMatamalaWinds(metallicity),
-                mlr=ToutMassLuminosityRelation(metallicity),
-                mrr=ToutMassRadiusRelation(metallicity),
-                metallicity=metallicity)
+    return dict(
+        wind=GormazMatamalaWinds(metallicity),
+        mlr=ToutMassLuminosityRelation(metallicity),
+        mrr=ToutMassRadiusRelation(metallicity),
+        metallicity=metallicity,
+    )
+
 
 def he_model_dict(metallicity):
     """Return model dict with HeMS MLR and MRR."""
-    return dict(wind=SanderWinds(mlr=HurleyMassLuminosityRelation(metallicity),
-                                 mrr=HurleyMassRadiusRelation(metallicity),
-                                 metallicity=metallicity),
-                mlr=HurleyMassLuminosityRelation(metallicity),
-                mrr=HurleyMassRadiusRelation(metallicity),
-                metallicity=metallicity)
+    return dict(
+        wind=SanderWinds(
+            mlr=HurleyMassLuminosityRelation(metallicity),
+            mrr=HurleyMassRadiusRelation(metallicity),
+            metallicity=metallicity,
+        ),
+        mlr=HurleyMassLuminosityRelation(metallicity),
+        mrr=HurleyMassRadiusRelation(metallicity),
+        metallicity=metallicity,
+    )
+
 
 def mixed_model_dict(metallicity):
     """Return model dict with HeMS MLR and HMS MRR."""
-    return dict(wind=SanderWinds(mlr=HurleyMassLuminosityRelation(metallicity),
-                                 mrr=ToutMassRadiusRelation(metallicity),
-                                 metallicity=metallicity),
-                mlr=HurleyMassLuminosityRelation(metallicity),
-                mrr=ToutMassRadiusRelation(metallicity),
-                metallicity=metallicity)
-    
+    return dict(
+        wind=SanderWinds(
+            mlr=HurleyMassLuminosityRelation(metallicity),
+            mrr=ToutMassRadiusRelation(metallicity),
+            metallicity=metallicity,
+        ),
+        mlr=HurleyMassLuminosityRelation(metallicity),
+        mrr=ToutMassRadiusRelation(metallicity),
+        metallicity=metallicity,
+    )
+
+
 def get_moment_of_inertia(prof, stop_i=-1):
     r_arr = prof.radius[::-1] * u.Rsun.to(u.cm)
-    rho_arr = 10.**prof.logRho[::-1]
-    
+    rho_arr = 10.0 ** prof.logRho[::-1]
+
     r_arr = r_arr[:stop_i]
     rho_arr = rho_arr[:stop_i]
-    
+
     i = 0
     for rho, r0, r1 in zip(rho_arr, r_arr[:-1], r_arr[1:]):
-        dv = 4/3 * np.pi * (r1**3 - r0**3)
+        dv = 4 / 3 * np.pi * (r1**3 - r0**3)
         di = rho * r0**2 * dv
         i += di
-        
+
     return i
