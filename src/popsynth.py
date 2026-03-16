@@ -340,6 +340,7 @@ class PMZWindPileupModel:
         fixed_q=1.0,
         seed=42,
         chain_n=None,
+        force_negative_delta=True,
     ):
         assert isinstance(
             core_props_df, pd.DataFrame
@@ -349,6 +350,7 @@ class PMZWindPileupModel:
         self.model_type = var
         self.idata = None
         self.chain_n = self.MC_CORES if chain_n is None else chain_n
+        self.force_negative_delta = force_negative_delta
 
         # reference quantities for scaling
         self.z_div_zsun_ref = z_div_zsun_ref
@@ -396,7 +398,7 @@ class PMZWindPileupModel:
         mf_s = base_term ** (1 / (1 - beta))
         return mf_s
 
-    def _af_map(self, mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta):
+    def _af_factor_map(self, mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta):
         base_term = 1 + (beta - 1) * mdot_ref_s * (z_s**gamma) * (pi_s**delta) * (
             mi_s ** (beta - (alpha + 1))
         )
@@ -412,7 +414,7 @@ class PMZWindPileupModel:
         self, mi_s, mdot_ref_s, z_s, pi_s, ai_phys, alpha, beta, gamma, delta
     ):
         mf_s = self._mf_map(mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta)
-        af_factor = self._af_map(mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta)
+        af_factor = self._af_factor_map(mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta)
 
         mf_phys = mf_s * self.m_ref
         af_phys = ai_phys * af_factor
@@ -498,19 +500,29 @@ class PMZWindPileupModel:
             )
 
             # Constrain delta to be negative
-            delta = pm.TruncatedNormal(
-                "delta", mu=self.PRIOR_DELTA_MU, sigma=self.PRIOR_DELTA_SIGMA, upper=0.0
-            )
+            if self.force_negative_delta:
+                delta = pm.TruncatedNormal(
+                    "delta", mu=self.PRIOR_DELTA_MU, sigma=self.PRIOR_DELTA_SIGMA, upper=0.0
+                )
+            else:
+                delta = pm.Normal(
+                    "delta", mu=self.PRIOR_DELTA_MU, sigma=self.PRIOR_DELTA_SIGMA
+                )
 
             # --- OPTIMIZATION 2: GRAPH MINIMIZATION ---
-            obs_mu_scaled = self._mf_map(
-                mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta
-            )
+            if self.model_type == "mass":
+                obs_mu_scaled = self._mf_map(
+                    mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta
+                )
+            else:
+                obs_mu_scaled = self._log_t_d_map(
+                    mi_s, mdot_ref_s, z_s, pi_s, ai_arr, alpha, beta, gamma, delta
+                )
 
             obs_sigma = pm.HalfNormal("sigma", sigma=1.0)
 
             pm.Normal(
-                "obs", mu=obs_mu_scaled, sigma=obs_sigma, observed=mf_observed_scaled
+                "obs", mu=obs_mu_scaled, sigma=obs_sigma, observed=mf_observed_scaled if self.model_type == "mass" else log_t_d_arr
             )
 
             # Sampling
@@ -568,20 +580,20 @@ class PMZWindPileupModel:
                 mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta
             )
             y_pred = y_pred_s * self.m_ref
-            ylabel = "Final Mass ($M_f$)"
+            ylabel = "$M_\\mathrm{f}/\\mathrm{M}_\\odot$"
         elif y_var == "a_f":
-            af_factor = self._af_map(
+            af_factor = self._af_factor_map(
                 mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta
             )
             y_pred = ai * af_factor
             y_obs = np.zeros_like(y_pred)  # Dummy for a_f since obs doesn't exist
-            ylabel = "Final Semi-major Axis ($a_f$)"
+            ylabel = "$A_\\mathrm{f}/\\mathrm{R}_\\odot$"
         elif y_var == "log_t_d":
             y_obs = log_td_obs
             y_pred = self._log_t_d_map(
                 mi_s, mdot_ref_s, z_s, pi_s, ai, alpha, beta, gamma, delta
             )
-            ylabel = "$\log_{10}$ Delay Time (yr)"
+            ylabel = "$\log t_\\mathrm{d}/\\mathrm{yr}$"
         else:
             raise ValueError("y_var must be 'm_f', 'a_f', or 'log_t_d'")
 
@@ -592,8 +604,8 @@ class PMZWindPileupModel:
             [ax1, ax2],
             [mi, pi],
             [
-                "Initial Mass ($M_{initial}$)",
-                "Initial Spin Period ($P_{initial}$ days)",
+                "$M_\\mathrm{i}/\\mathrm{M}_\\odot$",
+                "$P_\\mathrm{i}/\\mathrm{d}$",
             ],
         ):
             if y_var != "a_f":
@@ -716,7 +728,7 @@ class PMZWindPileupModel:
         axs[0, 1].axhline(0, color="r", linestyle="--", alpha=0.5, linewidth=1.5)
         axs[0, 1].set_ylabel("Abs. Res. ($M_{obs} - M_{pred}$)")
         axs[0, 1].set_title(
-            "Absolute Res. vs $M_{initial}$", fontsize=12, fontweight="bold"
+            "Absolute Res. vs $M_\\mathrm{i}/\\mathrm{M}_\\odot$", fontsize=12, fontweight="bold"
         )
 
         # 1.3 Absolute Residual vs P_initial
@@ -724,7 +736,7 @@ class PMZWindPileupModel:
         axs[0, 2].axhline(0, color="r", linestyle="--", alpha=0.5, linewidth=1.5)
         axs[0, 2].set_ylabel("Abs. Res. ($M_{obs} - M_{pred}$)")
         axs[0, 2].set_title(
-            "Absolute Res. vs $P_{initial}$", fontsize=12, fontweight="bold"
+            "Absolute Res. vs $P_\\mathrm{i}/\\mathrm{d}$", fontsize=12, fontweight="bold"
         )
 
         # ================= ROW 2: DELAY TIME =================
@@ -738,25 +750,25 @@ class PMZWindPileupModel:
                 max(max(log_td_obs[valid_t]), max(log_td_pred[valid_t])),
             ]
             axs[1, 0].plot(t_lims, t_lims, "r--", alpha=0.5, linewidth=1.5)
-        axs[1, 0].set_xlabel("Obs. $\\log_{10}(t_d / \\mathrm{yr})$")
-        axs[1, 0].set_ylabel("Pred. $\\log_{10}(t_d / \\mathrm{yr})$")
+        axs[1, 0].set_xlabel("Obs. $\\log t_\\mathrm{d} / \\mathrm{yr}$")
+        axs[1, 0].set_ylabel("Pred. $\\log t_\\mathrm{d} / \\mathrm{yr}$")
 
         # 2.2 Absolute Residual vs M_initial
         axs[1, 1].scatter(mi[valid_t], t_abs_res[valid_t], **s_kw)
         axs[1, 1].axhline(0, color="r", linestyle="--", alpha=0.5, linewidth=1.5)
-        axs[1, 1].set_xlabel("Initial Mass ($M_{initial}$)")
+        axs[1, 1].set_xlabel("$M_{i}/\\mathrm{M}_\\odot$")
         axs[1, 1].set_ylabel("Abs. Res. (dex)")
 
         # 2.3 Absolute Residual vs P_initial
         axs[1, 2].scatter(pi[valid_t], t_abs_res[valid_t], **s_kw)
         axs[1, 2].axhline(0, color="r", linestyle="--", alpha=0.5, linewidth=1.5)
-        axs[1, 2].set_xlabel("Initial Period ($P_{initial}$ days)")
+        axs[1, 2].set_xlabel("$P_{i}/\\mathrm{d}$")
         axs[1, 2].set_ylabel("Abs. Res. (dex)")
 
         # --- Final Layout Tuning ---
         # Add a single master colorbar detached slightly to the right
         cbar_ax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
-        fig.colorbar(sc, cax=cbar_ax, label="Metallicity $Z$")
+        fig.colorbar(sc, cax=cbar_ax, label="$Z$")
 
         # Manually squeeze the layout tight bounds
         plt.subplots_adjust(left=0.06, right=0.9, top=0.90, bottom=0.1)
@@ -790,7 +802,7 @@ class PMZWindPileupModel:
         mf_s = self._mf_map(mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta)
         mf = mf_s * self.m_ref
 
-        af_factor = self._af_map(mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta)
+        af_factor = self._af_factor_map(mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta)
         af = ai * af_factor
 
         log_t_d = self._log_t_d_map(
