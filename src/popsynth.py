@@ -226,42 +226,42 @@ class PMZLinearInterpolator:
             ip_data = ip_data[ip_data.is_He_depleted]
 
         m_zams = round(float(m_key), 1)
-        ip_x = ip_data[
-            (ip_data.z_key == z_key) & (ip_data.m_zams == m_zams)
-        ].p_spin_zams.values
-        ip_y = ip_data[(ip_data.z_key == z_key) & (ip_data.m_zams == m_zams)][
-            self.var
-        ].values
+        mask = (ip_data.z_key == z_key) & (ip_data.m_zams == m_zams)
+        ip_x = ip_data[mask].p_spin_zams.values
+        ip_y = ip_data[mask][self.var].values
+
+        empty_interpolator = interp1d(
+            [np.nan], [np.nan], bounds_error=False, fill_value=self.fill_value
+        )
 
         if len(ip_x) == 0 or len(ip_y) == 0:
             if self.bounds_error:
                 raise ValueError(f"No data for m_zams={m_zams}, z={z_key}")
-            else:
-                if self.verbose:
-                    print(
-                        f"Warning: No data for m_zams={m_zams}, z_key={z_key}. Returning empty interpolator."
-                    )
-                return interp1d(
-                    [np.nan], [np.nan], bounds_error=False, fill_value=self.fill_value
-                )
+            if self.verbose:
+                print(f"Warning: No data for m_zams={m_zams}, z_key={z_key}. Returning empty interpolator.")
+            return empty_interpolator
 
         ip_y = ip_y[ip_x.argsort()]
         ip_x = np.sort(ip_x)
-        try:
-            series = pd.Series(ip_y, index=ip_x)
-            ip_y = series.interpolate(
-                method="slinear", limit_area=None, limit_direction="both"
-            ).values
-        except ValueError:
-            print(ip_x, ip_y)
-            raise ValueError(
-                f"Interpolation failed for m_zams={m_zams}, z_key={z_key}. Check if ip_x is strictly increasing and has no duplicates."
-            )
 
-        p_interpolator = interp1d(
-            ip_x, ip_y, bounds_error=self.bounds_error, fill_value=self.fill_value
-        )
-        return p_interpolator
+        n_valid = np.sum(~np.isnan(ip_y))
+        if n_valid == 0:
+            return empty_interpolator
+        elif n_valid == 1:
+            ip_y = np.full_like(ip_y, ip_y[~np.isnan(ip_y)][0])
+        else:
+            try:
+                series = pd.Series(ip_y, index=ip_x)
+                ip_y = series.interpolate(
+                    method="slinear", limit_area=None, limit_direction="both"
+                ).values
+            except ValueError:
+                print(ip_x, ip_y)
+                raise ValueError(
+                    f"Interpolation failed for m_zams={m_zams}, z_key={z_key}. Check if ip_x is strictly increasing and has no duplicates."
+                )
+
+        return interp1d(ip_x, ip_y, bounds_error=self.bounds_error, fill_value=self.fill_value)
 
     def _get_m_interpolator(self, p_spin_zams, z_key):
         ip_x = []
@@ -275,10 +275,14 @@ class PMZLinearInterpolator:
         ip_y = ip_y[ip_x.argsort()]
         ip_x = np.sort(ip_x)
 
-        m_interpolator = interp1d(
-            ip_x, ip_y, bounds_error=self.bounds_error, fill_value=self.fill_value
-        )
-        return m_interpolator
+        valid = ~np.isnan(ip_y)
+        ip_x = ip_x[valid]
+        ip_y = ip_y[valid]
+
+        if len(ip_x) == 0:
+            return interp1d([np.nan], [np.nan], bounds_error=False, fill_value=self.fill_value)
+
+        return interp1d(ip_x, ip_y, bounds_error=self.bounds_error, fill_value=self.fill_value)
 
     def _get_z_interpolator(self, m_zams, p_spin_zams):
         ip_x = []
@@ -293,9 +297,14 @@ class PMZLinearInterpolator:
         ip_y = ip_y[ip_x.argsort()]
         ip_x = np.sort(ip_x)
 
-        logz_interpolator = interp1d(
-            ip_x, ip_y, bounds_error=self.bounds_error, fill_value=self.fill_value
-        )
+        valid = ~np.isnan(ip_y)
+        ip_x = ip_x[valid]
+        ip_y = ip_y[valid]
+
+        if len(ip_x) == 0:
+            return lambda z: self.fill_value
+
+        logz_interpolator = interp1d(ip_x, ip_y, bounds_error=self.bounds_error, fill_value=self.fill_value)
 
         def z_interpolator(z):
             return logz_interpolator(np.log10(z))
@@ -814,9 +823,109 @@ class PMZWindPileupModel:
 
 ## Public interface
 
+class FinalVarModel:
+    """Public interface for both the linear interpolator and analytical model, for a single variable."""
+
+    DEFAULT_LINEARINTERPOLATOR_KWARGS = {
+        "bounds_error": False,
+        "fill_value": np.nan,
+        "verbose": False,
+    }
+    DEFAULT_WINDPILEUPMODEL_KWARGS = {
+        "z_div_zsun_ref": Z_DIV_ZSUN_REF,
+        "m_ref": M_REF,
+        "tau_ref": TAU_REF,
+        "min_wind_z_div_zsun": MIN_WIND_Z_DIV_ZSUN,
+        "fixed_eccentricity": 0.0,
+        "seed": 42,
+    }
+
+    def __init__(
+        self,
+        core_props_df,
+        var,
+        model="interpolator",
+        che_mask_getter: Optional[Callable[[np.ndarray, np.ndarray], np.ndarray]] = None,
+        cut_non_he_depl=False,
+        title="new",
+        n_processes=1,
+        verbose=False,
+    ):
+        self.core_props_df = core_props_df
+        self.var = var
+        self.model = model
+        self.wpm = None
+        self.lip = None
+        self.model_to_use = "none"
+        self.cut_non_he_depl = cut_non_he_depl
+        self.che_mask_getter = che_mask_getter
+        self.title = title
+        self.n_processes = n_processes
+        self.verbose = verbose
+
+        if self.model not in ["interpolator", "analytical"]:
+            raise ValueError(
+                f"Invalid model: {self.model}. Choose 'interpolator' or 'analytical'."
+            )
+
+    def fit(self):
+        analytical_supported = self.var.startswith("m_") or self.var == "log_t_d"
+
+        if self.model == "analytical" and analytical_supported:
+            if self.verbose:
+                print(f"Fitting PMZWindPileupModel for variable '{self.var}'...")
+            self.wpm = PMZWindPileupModel(
+                core_props_df=self.core_props_df,
+                var=self.var,
+                cut_non_he_depl=self.cut_non_he_depl,
+                **self.DEFAULT_WINDPILEUPMODEL_KWARGS,
+            )
+            self.wpm.fit(verbose=self.verbose)
+            self.model_to_use = "analytical"
+        else:
+            if self.model == "analytical":
+                print(
+                    f"Variable '{self.var}' not available for analytical model. Falling back to linear interpolation."
+                )
+            self.lip = PMZLinearInterpolator(
+                self.core_props_df,
+                self.var,
+                **self.DEFAULT_LINEARINTERPOLATOR_KWARGS,
+            )
+            self._vec_get_var = np.vectorize(self.lip.get_var)
+            self.model_to_use = "interpolator"
+
+    def predict(self, job, apply_che_mask=None):
+        """Picklable method to predict from a pop array.
+
+        Job is a (n_pop, n_var) array where n_var >= 3. job[:, 0] contains
+        metallicities, job[:, 1] contains m_zams, job[:, 2] contains p_spin_zams.
+        """
+        if self.model_to_use == "none":
+            raise ValueError("Model not fitted yet. Call fit() first.")
+
+        if apply_che_mask is None:
+            apply_che_mask = self.che_mask_getter is not None
+        elif apply_che_mask and self.che_mask_getter is None:
+            raise ValueError("apply_che_mask=True but no che_mask_getter was provided.")
+
+        che_mask = (
+            self.che_mask_getter(job[:, 1], job[:, 2])
+            if apply_che_mask
+            else np.ones(len(job), dtype=bool)
+        )
+
+        if self.model_to_use == "analytical":
+            raw = self.wpm.get_mf_logtd(job[:, 1], job[:, 2], job[:, 0])
+            values = raw[0 if self.var.startswith("m_") else 1]
+        else:
+            values = self._vec_get_var(job[:, 1], job[:, 2], job[:, 0])
+
+        return np.where(che_mask, values, np.nan)
+
 
 # WIP FOR LATER, AFTER PMZ CLASSES DEBUGGING
-class FinalVarModel:
+class FinalVarModelBackup:
     """Public interface for both the linear interpolator and analytical model, for a single variable."""
 
     DEFAULT_LINERINTERPOLATOR_KWARGS = {
