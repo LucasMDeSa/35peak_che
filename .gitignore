@@ -3,3 +3,4 @@ src/__pycache__
 .vscode
 .venv
 **/__pycache__/
+data/ip_pop*
