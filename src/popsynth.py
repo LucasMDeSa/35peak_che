@@ -26,7 +26,7 @@ MDOT_REF = 5e-6  # msun/yr
 CHE_M_MIN = 20.0  # msun
 CHE_P_MIN = 0.4  # d
 CHE_LOWER_SLOPE = 0.002  # msun/d
-CHE_UPPER_SLOPE = 0.01  # msun/d
+CHE_UPPER_SLOPE = 0.02  # msun/d
 MIN_WIND_Z_DIV_ZSUN = 0.02
 
 # Pre-calculate physical constant factors to avoid repeated unit conversions
@@ -316,6 +316,292 @@ class PMZLinearInterpolator:
         return interpolator(z)
 
 
+## Corrected interpolator
+
+
+class PMZCorrectedInterpolator:
+    """Dense-grid interpolator with a multiplicative log-space correction surface.
+
+    Trains PMZLinearInterpolator on a dense reference dataset, computes log-space
+    residuals against a sparse target dataset, then fits a power-law correction
+    surface via OLS (numpy lstsq).  At prediction time:
+
+        get_var(mi, pi, z) = dense_interp(mi, pi, z) * correction(mi, pi, z)
+
+    where correction = A · mi_s^alpha · z_s^gamma · pi_s^delta, and only the
+    terms listed in correction_factors are active.  Parameter nomenclature matches
+    PMZWindPileupModel: alpha (mass), gamma (metallicity), delta (period).
+    """
+
+    ZSUN = 0.014  
+    P_REF = 1.0  
+
+    def __init__(
+        self,
+        target_df,
+        dense_df,
+        var,
+        correction_factors=("mi",),
+        bounds_error=False,
+        fill_value=np.nan,
+        verbose=False,
+        cut_non_he_depl=False,
+    ):
+        assert isinstance(target_df, pd.DataFrame), (
+            f"target_df must be a pandas DataFrame, not {type(target_df)}"
+        )
+        assert isinstance(dense_df, pd.DataFrame), (
+            f"dense_df must be a pandas DataFrame, not {type(dense_df)}"
+        )
+        bad = set(correction_factors) - {"mi", "z", "pi"}
+        if bad:
+            raise ValueError(
+                f"Unknown correction_factors: {bad}. Must be a subset of {{'mi', 'z', 'pi'}}."
+            )
+        self.target_df = target_df
+        self.dense_df = dense_df
+        self.var = var
+        self.correction_factors = list(correction_factors)
+        self.bounds_error = bounds_error
+        self.fill_value = fill_value
+        self.verbose = verbose
+        self.cut_non_he_depl = cut_non_he_depl
+
+        # fitted parameters — set by fit()
+        self._log10_A = 0.0
+        self._alpha   = 0.0
+        self._gamma   = 0.0
+        self._delta   = 0.0
+        self._fit_r2  = None
+        self._dense_interp = None
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    def _extract_target_arrays(self):
+        """Return (mi, pi, z, var_obs) from target_df, using the same filtering
+        as PMZLinearInterpolator._get_p_interpolator."""
+        df = self.target_df[self.target_df.is_che & ~self.target_df.is_merger_at_zams].copy()
+        if self.cut_non_he_depl:
+            df = df[df.is_He_depleted]
+        df = df.dropna(subset=["m_zams", "p_spin_zams", "z", self.var])
+        return (
+            df["m_zams"].values.astype(float),
+            df["p_spin_zams"].values.astype(float),
+            df["z"].values.astype(float),
+            df[self.var].values.astype(float),
+        )
+
+    def _scale_params(self, mi, z, pi):
+        """Convert physical (mi, z, pi) to dimensionless scaled versions,
+        matching PMZWindPileupModel._get_dimensionless_params."""
+        mi_s = np.asarray(mi, dtype=float) / M_REF
+        z_s  = np.maximum(np.asarray(z, dtype=float) / self.ZSUN, MIN_WIND_Z_DIV_ZSUN) / Z_DIV_ZSUN_REF
+        pi_s = np.asarray(pi, dtype=float) / self.P_REF
+        return mi_s, z_s, pi_s
+
+    def _build_design_matrix(self, mi_s, z_s, pi_s):
+        """OLS design matrix: [intercept, log10(mi_s)?, log10(z_s)?, log10(pi_s)?]."""
+        cols = [np.ones(len(mi_s))]
+        if "mi" in self.correction_factors:
+            cols.append(np.log10(mi_s))
+        if "z" in self.correction_factors:
+            cols.append(np.log10(z_s))
+        if "pi" in self.correction_factors:
+            cols.append(np.log10(pi_s))
+        return np.column_stack(cols)
+
+    def _log10_correction(self, mi, z, pi):
+        """Log10 of the correction factor for scalar or array inputs."""
+        mi_s, z_s, pi_s = self._scale_params(mi, z, pi)
+        log10_corr = self._log10_A
+        if "mi" in self.correction_factors:
+            log10_corr = log10_corr + self._alpha * np.log10(mi_s)
+        if "z" in self.correction_factors:
+            log10_corr = log10_corr + self._gamma * np.log10(z_s)
+        if "pi" in self.correction_factors:
+            log10_corr = log10_corr + self._delta * np.log10(pi_s)
+        return log10_corr
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def fit(self):
+        """Build dense interpolator, compute log-space residuals on target,
+        and fit the correction surface via numpy.linalg.lstsq."""
+        if self.verbose:
+            print(f"[PMZCorrectedInterpolator] Building dense PMZLinearInterpolator for '{self.var}'...")
+        self._dense_interp = PMZLinearInterpolator(
+            self.dense_df,
+            self.var,
+            bounds_error=self.bounds_error,
+            fill_value=self.fill_value,
+            verbose=self.verbose,
+            cut_non_he_depl=self.cut_non_he_depl,
+        )
+
+        mi, pi, z, var_obs = self._extract_target_arrays()
+        if self.verbose:
+            print(f"[PMZCorrectedInterpolator] Extracted {len(mi)} target points.")
+
+        interp_vals = np.vectorize(self._dense_interp.get_var)(mi, pi, z)
+
+        # log-space residuals
+        if self.var.startswith("log_"):
+            # var_obs already in log10 space; residual is additive
+            valid   = ~np.isnan(interp_vals) & ~np.isnan(var_obs)
+            residual = var_obs - interp_vals
+        else:
+            valid   = ~np.isnan(interp_vals) & ~np.isnan(var_obs) & (var_obs > 0) & (interp_vals > 0)
+            residual = np.where(valid, np.log10(var_obs) - np.log10(interp_vals), np.nan)
+
+        mi_v, pi_v, z_v = mi[valid], pi[valid], z[valid]
+        resid_v = residual[valid]
+
+        if self.verbose:
+            print(
+                f"[PMZCorrectedInterpolator] {valid.sum()}/{len(mi)} points valid "
+                f"(dropped {(~valid).sum()} NaN/non-positive)."
+            )
+        if len(resid_v) == 0:
+            raise ValueError(
+                f"No valid points for regression on '{self.var}'. "
+                "Check that dense_df covers the target_df region."
+            )
+
+        mi_s_v, z_s_v, pi_s_v = self._scale_params(mi_v, z_v, pi_v)
+        X = self._build_design_matrix(mi_s_v, z_s_v, pi_s_v)
+        coeffs, _, _, _ = np.linalg.lstsq(X, resid_v, rcond=None)
+
+        # unpack in canonical order: intercept, mi, z, pi
+        idx = 0
+        self._log10_A = coeffs[idx]; idx += 1
+        if "mi" in self.correction_factors:
+            self._alpha = coeffs[idx]; idx += 1
+        if "z" in self.correction_factors:
+            self._gamma = coeffs[idx]; idx += 1
+        if "pi" in self.correction_factors:
+            self._delta = coeffs[idx]; idx += 1
+
+        ss_tot = np.sum((resid_v - resid_v.mean()) ** 2)
+        ss_res = np.sum((resid_v - X @ coeffs) ** 2)
+        self._fit_r2 = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else np.nan
+
+        if self.verbose:
+            factors_str = ", ".join(self.correction_factors) or "(intercept only)"
+            active = {k: v for k, v in
+                      [("log10_A", self._log10_A), ("alpha", self._alpha),
+                       ("gamma", self._gamma), ("delta", self._delta)]
+                      if k == "log10_A" or k[0] in [f[0] for f in self.correction_factors]}
+            params_str = "  ".join(f"{k}={v:.4f}" for k, v in active.items())
+            print(
+                f"[PMZCorrectedInterpolator] Done. factors=[{factors_str}]  "
+                f"{params_str}  R²={self._fit_r2:.4f}"
+            )
+        return self
+
+    def get_var(self, mi, pi, z):
+        """Return corrected prediction. Returns fill_value when dense interpolator
+        returns NaN (outside convex hull). Compatible with np.vectorize."""
+        if self._dense_interp is None:
+            raise ValueError("Model not fitted. Call fit() first.")
+        base_val = self._dense_interp.get_var(mi, pi, z)
+        if np.isnan(base_val):
+            return self.fill_value
+        log10_corr = self._log10_correction(mi, z, pi)
+        if self.var.startswith("log_"):
+            return float(base_val + log10_corr)
+        return float(base_val * 10.0 ** log10_corr)
+
+    def plot_diagnostic(self):
+        """2×2 parity/residual plot showing before and after correction."""
+        if self._dense_interp is None:
+            raise ValueError("Model not fitted. Call fit() first.")
+
+        mi, pi, z, var_obs = self._extract_target_arrays()
+        interp_vals   = np.vectorize(self._dense_interp.get_var)(mi, pi, z)
+        corrected_vals = np.vectorize(self.get_var)(mi, pi, z)
+
+        valid = (~np.isnan(interp_vals) & ~np.isnan(var_obs)
+                 & ~np.isnan(corrected_vals))
+        mi_v, pi_v, z_v = mi[valid], pi[valid], z[valid]
+        obs_v    = var_obs[valid]
+        raw_v    = interp_vals[valid]
+        corr_v   = corrected_vals[valid]
+
+        fig, axs = plt.subplots(
+            2, 2, figsize=(14, 10),
+            gridspec_kw={"hspace": 0.35, "wspace": 0.28},
+        )
+        for ax in axs.flat:
+            ax.set_facecolor("#f4f4f6")
+            ax.grid(True, color="white", linestyle="-", linewidth=1.2)
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+            ax.tick_params(direction="in", length=4)
+
+        s_kw = dict(c=z_v, cmap="viridis", alpha=0.6, s=15, edgecolors="none")
+
+        def _residual(a, b):
+            if self.var.startswith("log_"):
+                return a - b
+            mask = (a > 0) & (b > 0)
+            r = np.full_like(a, np.nan)
+            r[mask] = np.log10(a[mask]) - np.log10(b[mask])
+            return r
+
+        raw_resid  = _residual(obs_v, raw_v)
+        corr_resid = _residual(obs_v, corr_v)
+        diag_raw   = [min(obs_v.min(), raw_v.min()),   max(obs_v.max(), raw_v.max())]
+        diag_corr  = [min(obs_v.min(), corr_v.min()),  max(obs_v.max(), corr_v.max())]
+        var_lbl    = self.var.replace("_", r"\_")
+        res_lbl    = (f"$\\Delta\\,{{{var_lbl}}}$" if self.var.startswith("log_")
+                      else r"$\log_{10}(\mathrm{target}/\mathrm{pred})$")
+
+        # [0,0] parity raw
+        axs[0, 0].scatter(obs_v, raw_v, **s_kw)
+        axs[0, 0].plot(diag_raw, diag_raw, "r--", alpha=0.6, lw=1.5)
+        axs[0, 0].set_xlabel(f"Target {var_lbl}")
+        axs[0, 0].set_ylabel(f"Dense interp. {var_lbl}")
+        axs[0, 0].set_title("Raw: parity", fontsize=11, fontweight="bold")
+
+        # [0,1] residual vs mi
+        axs[0, 1].scatter(mi_v, raw_resid, **s_kw)
+        axs[0, 1].axhline(0, color="r", ls="--", lw=1.5, alpha=0.6)
+        axs[0, 1].set_xlabel(r"$M_\mathrm{i}\,/\,\mathrm{M}_\odot$")
+        axs[0, 1].set_ylabel(res_lbl)
+        axs[0, 1].set_title("Raw: residual vs $M_i$", fontsize=11, fontweight="bold")
+
+        # [1,0] parity corrected
+        axs[1, 0].scatter(obs_v, corr_v, **s_kw)
+        axs[1, 0].plot(diag_corr, diag_corr, "r--", alpha=0.6, lw=1.5)
+        axs[1, 0].set_xlabel(f"Target {var_lbl}")
+        axs[1, 0].set_ylabel(f"Corrected {var_lbl}")
+        axs[1, 0].set_title("Corrected: parity", fontsize=11, fontweight="bold")
+
+        # [1,1] corrected residual vs pi
+        sc = axs[1, 1].scatter(pi_v, corr_resid, **s_kw)
+        axs[1, 1].axhline(0, color="r", ls="--", lw=1.5, alpha=0.6)
+        axs[1, 1].set_xlabel(r"$P_\mathrm{i}\,/\,\mathrm{d}$")
+        axs[1, 1].set_ylabel(res_lbl)
+        axs[1, 1].set_title("Corrected: residual vs $P_i$", fontsize=11, fontweight="bold")
+
+        cbar_ax = fig.add_axes([0.93, 0.15, 0.015, 0.7])
+        fig.colorbar(sc, cax=cbar_ax, label="$Z$")
+        plt.subplots_adjust(left=0.07, right=0.91, top=0.92, bottom=0.09)
+
+        factors_str = ", ".join(self.correction_factors) or "none"
+        fig.suptitle(
+            f"PMZCorrectedInterpolator — {self.var}  |  factors: [{factors_str}]  |  "
+            f"$R^2$={self._fit_r2:.3f}  $\\log_{{10}}A$={self._log10_A:.3f}",
+            fontsize=12, fontweight="bold",
+        )
+        plt.show()
+        return fig, axs
+
+
 ## Analytical model
 
 
@@ -332,6 +618,9 @@ class PMZWindPileupModel:
     PRIOR_GAMMA_SIGMA = 0.5
     PRIOR_DELTA_MU = -2.0  # Constrained negative
     PRIOR_DELTA_SIGMA = 1.0
+    PRIOR_ETA_SIGMA = 2.0  # Relative normalization of second wind phase (HalfNormal)
+    PRIOR_DELTA_ALPHA_MU = 0.0  # Difference in mass scaling exponent between phases
+    PRIOR_DELTA_ALPHA_SIGMA = 1.0
     MC_DRAWS = 1000
     MC_TUNE = 1000
     MC_CORES = 4
@@ -350,6 +639,7 @@ class PMZWindPileupModel:
         seed=42,
         chain_n=None,
         force_negative_delta=True,
+        use_alt_mf_map=False,
     ):
         assert isinstance(
             core_props_df, pd.DataFrame
@@ -360,6 +650,7 @@ class PMZWindPileupModel:
         self.idata = None
         self.chain_n = self.MC_CORES if chain_n is None else chain_n
         self.force_negative_delta = force_negative_delta
+        self.use_alt_mf_map = use_alt_mf_map
 
         # reference quantities for scaling
         self.z_div_zsun_ref = z_div_zsun_ref
@@ -407,23 +698,35 @@ class PMZWindPileupModel:
         mf_s = base_term ** (1 / (1 - beta))
         return mf_s
 
-    def _af_factor_map(self, mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta):
-        base_term = 1 + (beta - 1) * mdot_ref_s * (z_s**gamma) * (pi_s**delta) * (
-            mi_s ** (beta - (alpha + 1))
-        )
+    def _alt_mf_map(self, mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta, eta, delta_alpha):
+        """Two-regime wind: mi^{-alpha} * (1 + eta * mi^{-delta_alpha}).
+        The implicit crossover mass is mi_cross ~ eta^{1/delta_alpha} (in scaled units)."""
+        wind_term = (mi_s**-alpha) * (1 + eta * mi_s**-delta_alpha)
+        base_term = mi_s ** (1 - beta) + (beta - 1) * mdot_ref_s * (z_s**gamma) * (
+            pi_s**delta
+        ) * wind_term
         base_term = self._clamp_min(base_term, self._epsilon)
-        af_factor = base_term ** (1 / (beta - 1))
-        return af_factor
+        return base_term ** (1 / (1 - beta))
+
+    def _af_factor_map(self, mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta, eta=None, delta_alpha=None):
+        if self.use_alt_mf_map:
+            mf_s = self._alt_mf_map(mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta, eta, delta_alpha)
+        else:
+            mf_s = self._mf_map(mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta)
+        return mi_s / mf_s
 
     def _lifetime_map(self, mi_s, alpha):
         t_life = self.tau_ref * mi_s**-alpha
         return t_life
 
     def _log_t_d_map(
-        self, mi_s, mdot_ref_s, z_s, pi_s, ai_phys, alpha, beta, gamma, delta
+        self, mi_s, mdot_ref_s, z_s, pi_s, ai_phys, alpha, beta, gamma, delta, eta=None, delta_alpha=None
     ):
-        mf_s = self._mf_map(mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta)
-        af_factor = self._af_factor_map(mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta)
+        if self.use_alt_mf_map:
+            mf_s = self._alt_mf_map(mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta, eta, delta_alpha)
+        else:
+            mf_s = self._mf_map(mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta)
+        af_factor = mi_s / mf_s
 
         mf_phys = mf_s * self.m_ref
         af_phys = ai_phys * af_factor
@@ -463,7 +766,7 @@ class PMZWindPileupModel:
         else:
             raise ValueError(f"Unsupported variable '{var}'.")
 
-    def fit(self, verbose=True):
+    def fit(self, verbose=True, plot_pymc_outputs=False):
         if self.model_type == "mass":
             m_key = self.var
         else:
@@ -518,14 +821,30 @@ class PMZWindPileupModel:
                     "delta", mu=self.PRIOR_DELTA_MU, sigma=self.PRIOR_DELTA_SIGMA
                 )
 
-            # --- OPTIMIZATION 2: GRAPH MINIMIZATION ---
-            if self.model_type == "mass":
-                obs_mu_scaled = self._mf_map(
-                    mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta
+            # Alt map extra parameters
+            if self.use_alt_mf_map:
+                eta = pm.HalfNormal("eta", sigma=self.PRIOR_ETA_SIGMA)
+                delta_alpha = pm.Normal(
+                    "delta_alpha",
+                    mu=self.PRIOR_DELTA_ALPHA_MU,
+                    sigma=self.PRIOR_DELTA_ALPHA_SIGMA,
                 )
             else:
+                eta = delta_alpha = None
+
+            # --- OPTIMIZATION 2: GRAPH MINIMIZATION ---
+            if self.model_type == "mass":
+                if self.use_alt_mf_map:
+                    obs_mu_scaled = self._alt_mf_map(
+                        mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta, eta, delta_alpha
+                    )
+                else:
+                    obs_mu_scaled = self._mf_map(
+                        mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta
+                    )
+            else:
                 obs_mu_scaled = self._log_t_d_map(
-                    mi_s, mdot_ref_s, z_s, pi_s, ai_arr, alpha, beta, gamma, delta
+                    mi_s, mdot_ref_s, z_s, pi_s, ai_arr, alpha, beta, gamma, delta, eta, delta_alpha
                 )
 
             obs_sigma = pm.HalfNormal("sigma", sigma=1.0)
@@ -549,17 +868,28 @@ class PMZWindPileupModel:
                     "log_mdot_ref": self.PRIOR_LOGMDOTREF_MU,
                     "gamma": self.PRIOR_GAMMA_MU,
                     "delta": self.PRIOR_DELTA_MU,
+                    **( {"eta": 1.0, "delta_alpha": self.PRIOR_DELTA_ALPHA_MU}
+                        if self.use_alt_mf_map else {} ),
                 },
                 progressbar=verbose,
             )
 
+        var_names = ["alpha", "beta", "log_mdot_ref", "gamma", "delta"]
+        if self.use_alt_mf_map:
+            var_names += ["eta", "delta_alpha"]
+
         if verbose:
-            var_names = ["alpha", "beta", "log_mdot_ref", "gamma", "delta"]
-            print(az.summary(self.idata, var_names=var_names))
+            summary = az.summary(self.idata, var_names=var_names)
+            print(summary)
+            max_rhat = summary["r_hat"].max()
+            min_ess = summary[["ess_bulk", "ess_tail"]].min().min()
+            status = "OK" if max_rhat < 1.01 else "WARNING: check chains"
+            print(f"\nConvergence [{self.var}]: max r_hat={max_rhat:.4f}, min ESS={min_ess:.0f} — {status}")
+
+        if plot_pymc_outputs:
             az.plot_trace(self.idata, var_names=var_names)
             az.plot_posterior(self.idata, var_names=var_names)
             az.plot_pair(self.idata, var_names=var_names, kind="kde", marginals=True)
-
 
         return self.idata
 
@@ -573,6 +903,8 @@ class PMZWindPileupModel:
         mdot_ref = 10 ** float(post["log_mdot_ref"])
         gamma = float(post["gamma"])
         delta = float(post["delta"])
+        eta = float(post["eta"]) if self.use_alt_mf_map else None
+        delta_alpha = float(post["delta_alpha"]) if self.use_alt_mf_map else None
 
         m_key = self.var if self.model_type == "mass" else "m_f"
         mi, pi, ai, mf_obs, z, log_td_obs = self._get_mi_pi_ai_mf_logtd_arrays(
@@ -585,14 +917,19 @@ class PMZWindPileupModel:
 
         if y_var == "m_f":
             y_obs = mf_obs
-            y_pred_s = self._mf_map(
-                mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta
-            )
+            if self.use_alt_mf_map:
+                y_pred_s = self._alt_mf_map(
+                    mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta, eta, delta_alpha
+                )
+            else:
+                y_pred_s = self._mf_map(
+                    mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta
+                )
             y_pred = y_pred_s * self.m_ref
             ylabel = "$M_\\mathrm{f}/\\mathrm{M}_\\odot$"
         elif y_var == "a_f":
             af_factor = self._af_factor_map(
-                mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta
+                mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta, eta, delta_alpha
             )
             y_pred = ai * af_factor
             y_obs = np.zeros_like(y_pred)  # Dummy for a_f since obs doesn't exist
@@ -600,13 +937,12 @@ class PMZWindPileupModel:
         elif y_var == "log_t_d":
             y_obs = log_td_obs
             y_pred = self._log_t_d_map(
-                mi_s, mdot_ref_s, z_s, pi_s, ai, alpha, beta, gamma, delta
+                mi_s, mdot_ref_s, z_s, pi_s, ai, alpha, beta, gamma, delta, eta, delta_alpha
             )
             ylabel = "$\log t_\\mathrm{d}/\\mathrm{yr}$"
         else:
             raise ValueError("y_var must be 'm_f', 'a_f', or 'log_t_d'")
 
-        # Create a beautiful 2-panel plot
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 7))
 
         for ax, x_var, xlabel in zip(
@@ -677,6 +1013,8 @@ class PMZWindPileupModel:
             float(post[k]) for k in ["alpha", "beta", "log_mdot_ref", "gamma", "delta"]
         ]
         mdot_ref = 10**log_mdot_ref
+        eta = float(post["eta"]) if self.use_alt_mf_map else None
+        delta_alpha = float(post["delta_alpha"]) if self.use_alt_mf_map else None
 
         # Row 1 target: Defaults to m_f if model is predicting time, otherwise self.var
         m_key = self.var if self.model_type == "mass" else "m_f"
@@ -689,11 +1027,16 @@ class PMZWindPileupModel:
         )
 
         # --- Generate Predictions ---
-        mf_pred_s = self._mf_map(mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta)
+        if self.use_alt_mf_map:
+            mf_pred_s = self._alt_mf_map(
+                mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta, eta, delta_alpha
+            )
+        else:
+            mf_pred_s = self._mf_map(mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta)
         mf_pred = mf_pred_s * self.m_ref
 
         log_td_pred = self._log_t_d_map(
-            mi_s, mdot_ref_s, z_s, pi_s, ai, alpha, beta, gamma, delta
+            mi_s, mdot_ref_s, z_s, pi_s, ai, alpha, beta, gamma, delta, eta, delta_alpha
         )
 
         # --- Calculate Metrics ---
@@ -799,6 +1142,8 @@ class PMZWindPileupModel:
             float(post[k]) for k in ["alpha", "beta", "log_mdot_ref", "gamma", "delta"]
         ]
         mdot_ref = 10**log_mdot_ref
+        eta = float(post["eta"]) if self.use_alt_mf_map else None
+        delta_alpha = float(post["delta_alpha"]) if self.use_alt_mf_map else None
 
         ai = a_from_p(pi, mi, self.fixed_q)
         if hasattr(ai, "value"):
@@ -808,17 +1153,102 @@ class PMZWindPileupModel:
             mi, mdot_ref, z, pi
         )
 
-        mf_s = self._mf_map(mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta)
+        if self.use_alt_mf_map:
+            mf_s = self._alt_mf_map(
+                mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta, eta, delta_alpha
+            )
+        else:
+            mf_s = self._mf_map(mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta)
         mf = mf_s * self.m_ref
 
-        af_factor = self._af_factor_map(mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta)
+        af_factor = self._af_factor_map(
+            mi_s, mdot_ref_s, z_s, pi_s, alpha, beta, gamma, delta, eta, delta_alpha
+        )
         af = ai * af_factor
 
         log_t_d = self._log_t_d_map(
-            mi_s, mdot_ref_s, z_s, pi_s, ai, alpha, beta, gamma, delta
+            mi_s, mdot_ref_s, z_s, pi_s, ai, alpha, beta, gamma, delta, eta, delta_alpha
         )
 
         return mf, log_t_d
+
+
+## CHE window masks
+
+
+class LinearCHEWindowMask:
+    """CHE window mask based on linear fits in (mi, pi) space.
+    Metallicity-independent. The z argument in __call__ is accepted but ignored."""
+
+    def __init__(self, mi_min=CHE_M_MIN, pi_min=CHE_P_MIN,
+                 lower_slope=CHE_LOWER_SLOPE, upper_slope=CHE_UPPER_SLOPE):
+        self.mi_min = mi_min
+        self.pi_min = pi_min
+        self.lower_slope = lower_slope
+        self.upper_slope = upper_slope
+
+    def __call__(self, mi, pi, z=None):
+        mi = np.asarray(mi)
+        pi = np.asarray(pi)
+        lower = self.pi_min + self.lower_slope * mi
+        upper = self.pi_min + self.upper_slope * mi
+        return (mi >= self.mi_min) & (pi >= lower) & (pi <= upper)
+
+
+class ConvexHullCHEWindowMask:
+    """CHE window mask derived from the convex hull of a dense-grid interpolator.
+
+    Builds a PMZLinearInterpolator on the dense dataset, queries it at every
+    (mi, pi, z) grid-point combination, then applies a single-pass hole-fill
+    (a grid point surrounded by True neighbours along any axis is set True).
+    Query points are snapped to the nearest grid point at call time.
+    """
+
+    def __init__(self, dense_core_props_df, var="m_f"):
+        mi_vals = np.array(sorted(dense_core_props_df.m_zams.unique().astype(float)))
+        pi_vals = np.array(sorted(dense_core_props_df.p_spin_zams.unique().astype(float)))
+        z_vals  = np.array(sorted(dense_core_props_df.z_key.unique().astype(float)))
+
+        lip = PMZLinearInterpolator(
+            dense_core_props_df, var, bounds_error=False, fill_value=np.nan
+        )
+
+        # Query interpolator at every grid combination — shape (Nmi, Npi, Nz)
+        Nmi, Npi, Nz = len(mi_vals), len(pi_vals), len(z_vals)
+        mask = np.zeros((Nmi, Npi, Nz), dtype=bool)
+        for iz, z in enumerate(z_vals):
+            for imi, mi in enumerate(mi_vals):
+                for ipi, pi in enumerate(pi_vals):
+                    mask[imi, ipi, iz] = not np.isnan(lip.get_var(mi, pi, z))
+
+        # Single-pass hole-fill along each axis:
+        # if a point is False but both axis-neighbours are True, set it True
+        for axis in range(3):
+            sl_lo = [slice(None)] * 3; sl_lo[axis] = slice(None, -2)
+            sl_hi = [slice(None)] * 3; sl_hi[axis] = slice(2, None)
+            sl_cx = [slice(None)] * 3; sl_cx[axis] = slice(1, -1)
+            fill = mask[tuple(sl_lo)] & mask[tuple(sl_hi)] & ~mask[tuple(sl_cx)]
+            mask[tuple(sl_cx)] |= fill
+
+        self._mi_vals = mi_vals
+        self._pi_vals = pi_vals
+        self._z_vals  = z_vals
+        self._mask    = mask
+
+    @staticmethod
+    def _nearest_idx(arr, vals):
+        """Return the index of the nearest element in sorted arr for each value in vals."""
+        vals = np.asarray(vals)
+        idx = np.searchsorted(arr, vals).clip(1, len(arr) - 1)
+        left  = np.abs(vals - arr[idx - 1])
+        right = np.abs(vals - arr[idx])
+        return np.where(left <= right, idx - 1, idx)
+
+    def __call__(self, mi, pi, z):
+        imi = self._nearest_idx(self._mi_vals, mi)
+        ipi = self._nearest_idx(self._pi_vals, pi)
+        iz  = self._nearest_idx(self._z_vals,  z)
+        return self._mask[imi, ipi, iz]
 
 
 ## Public interface
@@ -850,26 +1280,56 @@ class FinalVarModel:
         title="new",
         n_processes=1,
         verbose=False,
+        plot_pymc_outputs=False,
+        fallback_to_interpolator_for_logtd=False,
+        dense_core_props_df=None,
+        correction_factors=("mi",),
     ):
         self.core_props_df = core_props_df
         self.var = var
         self.model = model
         self.wpm = None
         self.lip = None
+        self.cip = None
         self.model_to_use = "none"
         self.cut_non_he_depl = cut_non_he_depl
         self.che_mask_getter = che_mask_getter
         self.title = title
         self.n_processes = n_processes
         self.verbose = verbose
+        self.plot_pymc_outputs = plot_pymc_outputs
+        self.fallback_to_interpolator_for_logtd = fallback_to_interpolator_for_logtd
+        self.dense_core_props_df = dense_core_props_df
+        self.correction_factors = list(correction_factors)
 
-        if self.model not in ["interpolator", "analytical"]:
+        if self.model not in ["interpolator", "analytical", "corrected"]:
             raise ValueError(
-                f"Invalid model: {self.model}. Choose 'interpolator' or 'analytical'."
+                f"Invalid model: {self.model}. Choose 'interpolator', 'analytical', or 'corrected'."
             )
+        if self.model == "corrected" and self.dense_core_props_df is None:
+            raise ValueError("model='corrected' requires dense_core_props_df.")
 
     def fit(self):
-        analytical_supported = self.var.startswith("m_") or self.var == "log_t_d"
+        if self.model == "corrected":
+            self.cip = PMZCorrectedInterpolator(
+                target_df=self.core_props_df,
+                dense_df=self.dense_core_props_df,
+                var=self.var,
+                correction_factors=self.correction_factors,
+                **self.DEFAULT_LINEARINTERPOLATOR_KWARGS,
+                cut_non_he_depl=self.cut_non_he_depl,
+            )
+            self.cip.fit()
+            self._vec_get_var = np.vectorize(self.cip.get_var)
+            self.model_to_use = "interpolator"
+            return
+
+        if self.var.startswith("m_"):
+            analytical_supported = True
+        elif self.var == "log_t_d" and not self.fallback_to_interpolator_for_logtd:
+            analytical_supported = True
+        else:
+            analytical_supported = False
 
         if self.model == "analytical" and analytical_supported:
             if self.verbose:
@@ -877,10 +1337,9 @@ class FinalVarModel:
             self.wpm = PMZWindPileupModel(
                 core_props_df=self.core_props_df,
                 var=self.var,
-                cut_non_he_depl=self.cut_non_he_depl,
                 **self.DEFAULT_WINDPILEUPMODEL_KWARGS,
             )
-            self.wpm.fit(verbose=self.verbose)
+            self.wpm.fit(verbose=self.verbose, plot_pymc_outputs=self.plot_pymc_outputs)
             self.model_to_use = "analytical"
         else:
             if self.model == "analytical":
@@ -910,7 +1369,7 @@ class FinalVarModel:
             raise ValueError("apply_che_mask=True but no che_mask_getter was provided.")
 
         che_mask = (
-            self.che_mask_getter(job[:, 1], job[:, 2])
+            self.che_mask_getter(job[:, 1], job[:, 2], job[:, 0])
             if apply_che_mask
             else np.ones(len(job), dtype=bool)
         )
@@ -987,6 +1446,7 @@ class FinalVarModelBackup:
                 print(f"Fitting PMZWindPileupModel for variable '{self.var}'...")
             self.wpm = PMZWindPileupModel(
                 core_props_df=self.core_props_df,
+                force_negative_delta=False,
                 **self.DEFAULT_WINDPILEUPMODEL_KWARGS,
             )
             self.wpm.fit_model(self.var, verbose=self.verbose)
