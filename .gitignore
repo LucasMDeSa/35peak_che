@@ -1,3 +1,5 @@
-./tutorials
-./src/__pycache__
+tutorials
+src/__pycache__
 .vscode
+.venv
+**/__pycache__/
