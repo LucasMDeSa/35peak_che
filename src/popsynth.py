@@ -190,6 +190,535 @@ def get_complete_core_props_df(path, fast=True):
 ## Linear interpolator
 
 
+def _predict_get_var(model, m_arr, p_arr, z_arr):
+    """Loop-call model.get_var on each scalar triple. Avoids np.vectorize quirks
+    where the inner interp1d returns 0-d arrays / object dtypes that can break
+    downstream NaN masks."""
+    out = np.empty(len(m_arr), dtype=float)
+    for i, (m, p, z) in enumerate(zip(m_arr, p_arr, z_arr)):
+        try:
+            v = float(model.get_var(float(m), float(p), float(z)))
+        except (ValueError, TypeError):
+            v = np.nan
+        out[i] = v
+    return out
+
+
+def _draw_interpolator_fit_figure(
+    mass_model, time_model, eval_df, z_keys, m_keys, n_grid_points,
+    x_axis="mass", title_suffix="",
+):
+    """Draw a 2×2 figure: columns = (mass_var, time_var), rows = (data+model, residuals).
+
+    `x_axis` ∈ {"mass", "period"}: which initial-condition axis to use as x.
+    The other (continuous) axis is encoded as color; z_key is encoded as
+    marker + linestyle.
+
+    Model lines come from `mass_model`/`time_model` (trained on some subset).
+    Scattered points come from `eval_df` (the held-out or full dataset).
+    """
+    from matplotlib.lines import Line2D
+    import matplotlib as mpl
+
+    if x_axis not in ("mass", "period"):
+        raise ValueError(f"x_axis must be 'mass' or 'period', got {x_axis!r}.")
+
+    z_vals_sorted = sorted(float(z) for z in z_keys)
+    _ls_cycle = ["-", "--", ":", "-."]
+    _mk_cycle = ["o", "s", "^", "D", "v", "P"]
+    z_ls = {z: _ls_cycle[i % len(_ls_cycle)] for i, z in enumerate(z_vals_sorted)}
+    z_mk = {z: _mk_cycle[i % len(_mk_cycle)] for i, z in enumerate(z_vals_sorted)}
+
+    # Encoding setup: x-axis vs color-axis
+    if x_axis == "period":
+        x_label = r"$P_\mathrm{i}/\mathrm{d}$"
+        color_label = r"$M_\mathrm{i}/\mathrm{M}_\odot$"
+        m_vals = sorted(float(m) for m in m_keys)
+        c_norm = mpl.colors.Normalize(vmin=m_vals[0], vmax=m_vals[-1])
+    else:  # x_axis == "mass"
+        x_label = r"$M_\mathrm{i}/\mathrm{M}_\odot$"
+        color_label = r"$P_\mathrm{i}/\mathrm{d}$"
+        # Color range derived from data — set after first model loaded
+        all_p = mass_model.core_props_df.p_spin_zams.dropna()
+        c_norm = mpl.colors.Normalize(
+            vmin=float(all_p.min()), vmax=float(all_p.max()),
+        )
+    c_cmap = plt.cm.viridis
+
+    fig, axs = plt.subplots(
+        2, 2, figsize=(14, 8),
+        gridspec_kw={"hspace": 0.06, "wspace": 0.28, "height_ratios": [2, 1]},
+    )
+    axs[0, 0].sharex(axs[1, 0])
+    axs[0, 1].sharex(axs[1, 1])
+    plt.setp(axs[0, 0].get_xticklabels(), visible=False)
+    plt.setp(axs[0, 1].get_xticklabels(), visible=False)
+    for ax in axs.flat:
+        ax.set_facecolor("#f4f4f6")
+        ax.grid(True, color="white", linestyle="-", linewidth=1.2)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.tick_params(direction="in", length=4)
+
+    for col, model in enumerate((mass_model, time_model)):
+        var = model.var
+        cut = getattr(model, "cut_non_he_depl", False)
+        df = eval_df[eval_df.is_che & ~eval_df.is_merger_at_zams].copy()
+        if cut:
+            df = df[df.is_He_depleted]
+        df = df.dropna(subset=["m_zams", "p_spin_zams", "z", var])
+
+        train_df_full = model.core_props_df[
+            model.core_props_df.is_che & ~model.core_props_df.is_merger_at_zams
+        ]
+        if cut:
+            train_df_full = train_df_full[train_df_full.is_He_depleted]
+        train_df_full = train_df_full.dropna(subset=["m_zams", "p_spin_zams", "z", var])
+
+        for z_key in z_keys:
+            z_val = float(z_key)
+            ls, mk = z_ls[z_val], z_mk[z_val]
+
+            # ---- model lines ----
+            if x_axis == "period":
+                # one line per (m_zams, z_key): use stored p-interpolators
+                for m_key in m_keys:
+                    m_zams_val = round(float(m_key), 1)
+                    color = c_cmap(c_norm(float(m_key)))
+                    p_interp = model.p_interpolators.get(z_key, {}).get(m_key)
+                    if p_interp is None:
+                        continue
+                    tb = train_df_full[
+                        (train_df_full.z_key == z_key)
+                        & (train_df_full.m_zams == m_zams_val)
+                    ]
+                    if tb.empty:
+                        continue
+                    p_dense = np.linspace(
+                        tb.p_spin_zams.min(), tb.p_spin_zams.max(), n_grid_points,
+                    )
+                    axs[0, col].plot(
+                        p_dense, p_interp(p_dense),
+                        color=color, linestyle=ls, linewidth=1.5, alpha=0.85,
+                    )
+            else:  # x_axis == "mass"
+                # one line per (z_key, distinct p_spin_zams in training data):
+                # evaluate get_var across a dense m grid at fixed (p, z).
+                z_train = train_df_full[train_df_full.z_key == z_key]
+                if z_train.empty:
+                    continue
+                p_unique = np.sort(z_train.p_spin_zams.unique())
+                for p_val in p_unique:
+                    color = c_cmap(c_norm(float(p_val)))
+                    sub = z_train[z_train.p_spin_zams == p_val]
+                    if sub.empty:
+                        continue
+                    m_lo = float(sub.m_zams.min())
+                    m_hi = float(sub.m_zams.max())
+                    if m_hi <= m_lo:
+                        continue
+                    m_dense = np.linspace(m_lo, m_hi, n_grid_points)
+                    z_phys = float(sub.z.iloc[0])
+                    y_dense = _predict_get_var(
+                        model, m_dense, np.full_like(m_dense, p_val),
+                        np.full_like(m_dense, z_phys),
+                    )
+                    axs[0, col].plot(
+                        m_dense, y_dense,
+                        color=color, linestyle=ls, linewidth=1.2, alpha=0.7,
+                    )
+
+            # ---- eval data scatter + residuals ----
+            bin_eval = df[df.z_key == z_key]
+            if bin_eval.empty:
+                continue
+            mi = bin_eval.m_zams.values.astype(float)
+            pi = bin_eval.p_spin_zams.values.astype(float)
+            zi = bin_eval.z.values.astype(float)
+            obs = bin_eval[var].values.astype(float)
+            pred = _predict_get_var(model, mi, pi, zi)
+
+            color_vals = mi if x_axis == "period" else pi
+            x_vals = pi if x_axis == "period" else mi
+
+            axs[0, col].scatter(
+                x_vals, obs, c=color_vals, cmap=c_cmap, norm=c_norm,
+                marker=mk, s=22, alpha=0.65, edgecolors="none",
+            )
+            valid = ~np.isnan(obs) & ~np.isnan(pred)
+            if valid.any():
+                axs[1, col].scatter(
+                    x_vals[valid], obs[valid] - pred[valid],
+                    c=color_vals[valid], cmap=c_cmap, norm=c_norm,
+                    marker=mk, s=22, alpha=0.65, edgecolors="none",
+                )
+
+        axs[1, col].axhline(0, color="r", linestyle="--", alpha=0.5, linewidth=1.5)
+        axs[0, col].set_ylabel(var)
+        axs[1, col].set_ylabel(f"Residual ({var})")
+        axs[1, col].set_xlabel(x_label)
+
+    # Shared colorbar
+    sm = mpl.cm.ScalarMappable(cmap=c_cmap, norm=c_norm)
+    sm.set_array([])
+    cbar_ax = fig.add_axes([0.92, 0.15, 0.012, 0.7])
+    fig.colorbar(sm, cax=cbar_ax, label=color_label)
+
+    # Legend: z_key (linestyle + marker)
+    z_handles = [
+        Line2D(
+            [0], [0], color="gray", linestyle=z_ls[z], marker=z_mk[z],
+            markersize=5, linewidth=1.5, label=f"$Z={z:.4f}$",
+        )
+        for z in z_vals_sorted
+    ]
+    axs[0, 0].legend(handles=z_handles, loc="best", fontsize=8, framealpha=0.6)
+
+    plt.subplots_adjust(left=0.07, right=0.9, top=0.91, bottom=0.09)
+    fig.suptitle(
+        f"Interpolator vs Data  |  x={x_axis}  |  {title_suffix}",
+        fontsize=13, fontweight="bold",
+    )
+    plt.show()
+    return fig, axs
+
+
+def plot_pmz_interpolator_fit(
+    cls,
+    core_props_df,
+    mass_var="m_f",
+    time_var="log_t_d",
+    x_axis="mass",
+    k=None,
+    z_keys=None,
+    m_keys=None,
+    n_grid_points=300,
+    group_by=None,
+    random_state=None,
+    fit=True,
+    **cls_kwargs,
+):
+    """Build two PMZ interpolators (mass_var + time_var) and plot their fit
+    against the raw data in a 2×2 grid (columns = variables, rows = data/residuals).
+
+    x_axis ∈ {"mass", "period"} — controls which initial-condition is on the
+    x-axis. The other one is encoded as point colour. Default: "mass".
+
+    k=None  — train and evaluate on the full `core_props_df` (one figure).
+    k=int   — k-fold split: for each fold build models on the training subset and
+              evaluate on the held-out subset, producing k figures.
+              `group_by` (column name or list) controls grouped splitting.
+
+    Returns a list of (fig, axs) tuples — length 1 for k=None, length k otherwise.
+    """
+    n = len(core_props_df)
+    pos = np.arange(n)
+
+    if k is None:
+        folds = [(pos, pos)]
+        fold_labels = ["Full Sample"]
+    else:
+        rng = np.random.default_rng(random_state)
+        if group_by is None:
+            order = rng.permutation(n)
+            fold_ids = np.empty(n, dtype=int)
+            fold_ids[order] = np.arange(n) % k
+        else:
+            cols = [group_by] if isinstance(group_by, str) else list(group_by)
+            group_keys = (
+                core_props_df[cols].astype(str).agg("|".join, axis=1).values
+            )
+            unique_groups = np.array(sorted(set(group_keys)))
+            rng.shuffle(unique_groups)
+            group_to_fold = {g: i % k for i, g in enumerate(unique_groups)}
+            fold_ids = np.array([group_to_fold[g] for g in group_keys])
+        folds = [
+            (pos[fold_ids != f], pos[fold_ids == f]) for f in range(k)
+        ]
+        fold_labels = [f"Fold {i + 1}/{k}" for i in range(k)]
+
+    figures = []
+    for (train_pos, test_pos), label in zip(folds, fold_labels):
+        train_df = core_props_df.iloc[train_pos]
+        test_df = core_props_df.iloc[test_pos]
+
+        mass_model = cls(core_props_df=train_df, var=mass_var, **cls_kwargs)
+        time_model = cls(core_props_df=train_df, var=time_var, **cls_kwargs)
+        if fit:
+            for m in (mass_model, time_model):
+                fit_fn = getattr(m, "fit", None)
+                if callable(fit_fn):
+                    fit_fn()
+
+        _z_keys = z_keys or list(mass_model.p_interpolators.keys())
+        _m_keys = m_keys or list(next(iter(mass_model.p_interpolators.values())).keys())
+
+        fig, axs = _draw_interpolator_fit_figure(
+            mass_model, time_model, test_df, _z_keys, _m_keys, n_grid_points,
+            x_axis=x_axis, title_suffix=label,
+        )
+        figures.append((fig, axs))
+
+    return figures
+
+
+def _draw_pmz_diagnostic_row(
+    model, axs_row, target_df, var_label=None, pred_override=None, var_name=None,
+):
+    """Draw a parity / abs-res vs mi / abs-res vs pi triplet into the 3 axes
+    in `axs_row`, evaluating `model.get_var(mi, pi, z)` on `target_df`.
+
+    Works for any object exposing `model.var` (str) and `model.get_var`.
+    Returns the parity scatter handle (for shared colorbars).
+
+    If `pred_override` is given (pd.Series indexed like `target_df.index`),
+    those predictions are used instead of calling `model.get_var` — useful
+    for plotting precomputed CV / out-of-fold predictions. In that case
+    `model` may be None, and `var_name` must be supplied.
+    """
+    var_name = var_name or (model.var if model is not None else None)
+    if var_name is None:
+        raise ValueError("Must supply either a model with `.var` or `var_name=`.")
+    cut = getattr(model, "cut_non_he_depl", False) if model is not None else False
+    df = target_df[target_df.is_che & ~target_df.is_merger_at_zams].copy()
+    if cut:
+        df = df[df.is_He_depleted]
+    df = df.dropna(subset=["m_zams", "p_spin_zams", "z", var_name])
+    mi = df["m_zams"].values.astype(float)
+    pi = df["p_spin_zams"].values.astype(float)
+    z = df["z"].values.astype(float)
+    obs = df[var_name].values.astype(float)
+    if pred_override is not None:
+        if not isinstance(pred_override, pd.Series):
+            raise TypeError(
+                "pred_override must be a pd.Series aligned to target_df.index"
+            )
+        pred = pred_override.reindex(df.index).values.astype(float)
+    else:
+        pred = np.vectorize(model.get_var)(mi, pi, z)
+
+    valid = ~np.isnan(obs) & ~np.isnan(pred)
+    mi, pi, z, obs, pred = mi[valid], pi[valid], z[valid], obs[valid], pred[valid]
+    res = obs - pred
+    label = var_label if var_label is not None else var_name
+
+    for ax in axs_row:
+        ax.set_facecolor("#f4f4f6")
+        ax.grid(True, color="white", linestyle="-", linewidth=1.2)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.tick_params(direction="in", length=4)
+
+    s_kw = dict(c=z, cmap="viridis", alpha=0.5, s=15, edgecolors="none")
+
+    sc = axs_row[0].scatter(obs, pred, **s_kw)
+    if obs.size:
+        lims = [min(obs.min(), pred.min()), max(obs.max(), pred.max())]
+        axs_row[0].plot(lims, lims, "r--", alpha=0.5, linewidth=1.5)
+    axs_row[0].set_xlabel(f"Obs. {label}")
+    axs_row[0].set_ylabel(f"Pred. {label}")
+    axs_row[0].set_title("Parity", fontsize=12, fontweight="bold")
+
+    axs_row[1].scatter(mi, res, **s_kw)
+    axs_row[1].axhline(0, color="r", linestyle="--", alpha=0.5, linewidth=1.5)
+    axs_row[1].set_xlabel(r"$M_\mathrm{i}/\mathrm{M}_\odot$")
+    axs_row[1].set_ylabel(f"Abs. Res. ({label})")
+    axs_row[1].set_title(r"Abs. Res. vs $M_\mathrm{i}$", fontsize=12, fontweight="bold")
+
+    axs_row[2].scatter(pi, res, **s_kw)
+    axs_row[2].axhline(0, color="r", linestyle="--", alpha=0.5, linewidth=1.5)
+    axs_row[2].set_xlabel(r"$P_\mathrm{i}/\mathrm{d}$")
+    axs_row[2].set_ylabel(f"Abs. Res. ({label})")
+    axs_row[2].set_title(r"Abs. Res. vs $P_\mathrm{i}$", fontsize=12, fontweight="bold")
+
+    return sc
+
+
+def plot_pmz_mass_time_diagnostic(
+    cls,
+    target_df,
+    mass_var="m_f",
+    time_var="log_t_d",
+    fit=True,
+    **cls_kwargs,
+):
+    """Build two `cls` instances (one for `mass_var`, one for `time_var`) and
+    stack their single-row diagnostics into a 2×3 grid evaluated on `target_df`.
+
+    Extra kwargs are forwarded to the class constructor; `var` is supplied here.
+    If `fit=True`, calls `.fit()` on each instance when the method exists.
+    Returns (fig, axs, mass_model, time_model).
+    """
+    mass_model = cls(var=mass_var, **cls_kwargs)
+    time_model = cls(var=time_var, **cls_kwargs)
+    if fit:
+        for m in (mass_model, time_model):
+            fit_method = getattr(m, "fit", None)
+            if callable(fit_method):
+                fit_method()
+
+    fig, axs = plt.subplots(
+        2, 3, figsize=(16, 9), gridspec_kw={"hspace": 0.30, "wspace": 0.25},
+    )
+    _draw_pmz_diagnostic_row(mass_model, axs[0], target_df, var_label=mass_var)
+    sc = _draw_pmz_diagnostic_row(time_model, axs[1], target_df, var_label=time_var)
+
+    cbar_ax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
+    fig.colorbar(sc, cax=cbar_ax, label="$Z$")
+    plt.subplots_adjust(left=0.06, right=0.9, top=0.90, bottom=0.1)
+    fig.suptitle(
+        f"{cls.__name__} Diagnostic Dashboard",
+        fontsize=15, fontweight="bold",
+    )
+    plt.show()
+    return fig, axs, mass_model, time_model
+
+
+def cross_validate_pmz(
+    cls,
+    core_props_df,
+    var,
+    k=5,
+    group_by=None,
+    random_state=None,
+    fit=True,
+    train_arg="core_props_df",
+    verbose=False,
+    **cls_kwargs,
+):
+    """k-fold cross-validation for a PMZ-style interpolator.
+
+    For each of `k` folds, trains `cls(**{train_arg: train_subset}, var=var,
+    **cls_kwargs)` on the rest of `core_props_df` and predicts on the held-out
+    rows via `model.get_var(mi, pi, z)`. Returns a `pd.Series` of out-of-fold
+    predictions aligned to `core_props_df.index` (NaN where prediction failed).
+
+    Splitting:
+      - `group_by=None` (default): random row k-fold.
+      - `group_by="z_key"` (or any column name): grouped k-fold — rows sharing
+        a value go to the same fold. Useful for testing extrapolation.
+      - `group_by=["m_zams", "z_key"]`: hold out entire grid bins.
+
+    `fit=True` calls `.fit()` on each model when the method exists.
+    """
+    rng = np.random.default_rng(random_state)
+    n = len(core_props_df)
+    pos = np.arange(n)
+
+    if group_by is None:
+        order = rng.permutation(n)
+        fold_ids = np.empty(n, dtype=int)
+        fold_ids[order] = np.arange(n) % k
+    else:
+        cols = [group_by] if isinstance(group_by, str) else list(group_by)
+        group_keys = (
+            core_props_df[cols].astype(str).agg("|".join, axis=1).values
+        )
+        unique_groups = np.array(sorted(set(group_keys)))
+        rng.shuffle(unique_groups)
+        group_to_fold = {g: i % k for i, g in enumerate(unique_groups)}
+        fold_ids = np.array([group_to_fold[g] for g in group_keys])
+
+    pred = np.full(n, np.nan, dtype=float)
+    for fold in range(k):
+        test_mask = fold_ids == fold
+        if not test_mask.any():
+            continue
+        train_df = core_props_df.iloc[pos[~test_mask]]
+        test_df = core_props_df.iloc[pos[test_mask]]
+        if verbose:
+            print(
+                f"[cross_validate_pmz] fold {fold + 1}/{k}: "
+                f"train={len(train_df)}  test={len(test_df)}"
+            )
+        model = cls(**{train_arg: train_df}, var=var, **cls_kwargs)
+        if fit:
+            fit_method = getattr(model, "fit", None)
+            if callable(fit_method):
+                fit_method()
+        mi = test_df["m_zams"].values.astype(float)
+        pi = test_df["p_spin_zams"].values.astype(float)
+        z = test_df["z"].values.astype(float)
+        pred[test_mask] = np.vectorize(model.get_var)(mi, pi, z)
+
+    return pd.Series(pred, index=core_props_df.index, name=f"{var}_oof")
+
+
+def plot_pmz_cv_diagnostic(
+    cls,
+    core_props_df,
+    mass_var="m_f",
+    time_var="log_t_d",
+    k=5,
+    group_by=None,
+    random_state=None,
+    fit=True,
+    train_arg="core_props_df",
+    verbose=False,
+    **cls_kwargs,
+):
+    """Run k-fold CV for `mass_var` (and optionally `time_var`) and plot the
+    resulting out-of-fold parity / residual diagnostic.
+
+    If `time_var=None`, produces a 1×3 single-row diagnostic for `mass_var`.
+    Otherwise produces a 2×3 mass-on-top, time-on-bottom diagnostic.
+
+    Returns (fig, axs, oof_predictions) where `oof_predictions` is a Series
+    (single var) or dict {var: Series} (both).
+    """
+    cv_kwargs = dict(
+        k=k, group_by=group_by, random_state=random_state, fit=fit,
+        train_arg=train_arg, verbose=verbose,
+    )
+    mass_oof = cross_validate_pmz(
+        cls, core_props_df, mass_var, **cv_kwargs, **cls_kwargs,
+    )
+    time_oof = None
+    if time_var is not None:
+        time_oof = cross_validate_pmz(
+            cls, core_props_df, time_var, **cv_kwargs, **cls_kwargs,
+        )
+
+    n_rows = 2 if time_var is not None else 1
+    fig, axs = plt.subplots(
+        n_rows, 3,
+        figsize=(16, 9 if n_rows == 2 else 4.7),
+        gridspec_kw={"hspace": 0.30, "wspace": 0.25} if n_rows == 2
+        else {"wspace": 0.25},
+    )
+    axs = np.atleast_2d(axs)
+
+    sc = _draw_pmz_diagnostic_row(
+        None, axs[0], core_props_df,
+        var_label=mass_var, var_name=mass_var, pred_override=mass_oof,
+    )
+    if time_var is not None:
+        sc = _draw_pmz_diagnostic_row(
+            None, axs[1], core_props_df,
+            var_label=time_var, var_name=time_var, pred_override=time_oof,
+        )
+
+    cbar_ax = fig.add_axes(
+        [0.92, 0.15, 0.015, 0.7] if n_rows == 2 else [0.92, 0.18, 0.015, 0.65]
+    )
+    fig.colorbar(sc, cax=cbar_ax, label="$Z$")
+    plt.subplots_adjust(
+        left=0.06, right=0.9,
+        top=0.90 if n_rows == 2 else 0.82,
+        bottom=0.10 if n_rows == 2 else 0.18,
+    )
+    grouping = f"group_by={group_by}" if group_by is not None else "random"
+    fig.suptitle(
+        f"{cls.__name__} — {k}-fold CV ({grouping})",
+        fontsize=15, fontweight="bold",
+    )
+    plt.show()
+
+    if time_var is None:
+        return fig, axs, mass_oof
+    return fig, axs, {mass_var: mass_oof, time_var: time_oof}
+
+
 class PMZLinearInterpolator:
 
     def __init__(
@@ -314,6 +843,29 @@ class PMZLinearInterpolator:
     def get_var(self, m, p, z):
         interpolator = self._get_z_interpolator(m, p)
         return interpolator(z)
+
+    def plot_diagnostic(self, target_df):
+        """Single-row parity / abs-res vs mi / abs-res vs pi diagnostic for
+        `self.var`, evaluated against an external `target_df`.
+
+        Note: evaluating an interpolator on its own training grid yields
+        trivially perfect parity at the nodes, so `target_df` should generally
+        be a held-out dataset (e.g. the sparse target used by
+        `PMZCorrectedInterpolator`).
+        """
+        fig, axs = plt.subplots(
+            1, 3, figsize=(16, 4.7), gridspec_kw={"wspace": 0.25},
+        )
+        sc = _draw_pmz_diagnostic_row(self, axs, target_df)
+        cbar_ax = fig.add_axes([0.92, 0.18, 0.015, 0.65])
+        fig.colorbar(sc, cax=cbar_ax, label="$Z$")
+        plt.subplots_adjust(left=0.06, right=0.9, top=0.82, bottom=0.18)
+        fig.suptitle(
+            f"PMZLinearInterpolator Diagnostic: {self.var}",
+            fontsize=14, fontweight="bold",
+        )
+        plt.show()
+        return fig, axs
 
 
 ## Corrected interpolator
