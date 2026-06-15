@@ -11,12 +11,11 @@ import astropy.constants as ct
 import astropy.units as u
 import mesa_reader as mr
 
-
 # Definitions
 ## Paths
 ROOT = Path("..")
 DATA_DIR = ROOT / "data"
-MESA_DATA_DIR = Path("/mnt/home/ldesa/ceph/mesa_che_grids/sse_production")
+MESA_DATA_DIR = Path("/mnt/sds-hd/sd23g011/desa/ceph/mesa_che_grids/sse_production")
 NB_OUTPUT_DIR = ROOT / "notebooks/output"
 
 # Colormaps
@@ -40,8 +39,10 @@ def build_logbump35_cmap(vmin=1.0, vmax=2.0, vcenter=1.54, base_cmap=cm.seismic)
 
 ## Utilities
 
+
 class DualLogger:
     """A simple logger that writes to both terminal and a file."""
+
     def __init__(self, filepath):
         self.terminal = sys.stdout
         self.log_file = open(filepath, "a")
@@ -54,6 +55,7 @@ class DualLogger:
     def flush(self):
         self.terminal.flush()
         self.log_file.flush()
+
 
 def fix_unit(var, unit):
     """If a variable is passed without a unit, set it to *unit*."""
