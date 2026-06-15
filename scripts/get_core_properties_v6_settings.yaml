@@ -1,0 +1,63 @@
+# Settings for get_core_properties_v6.py
+# All keys are optional. Omit a key to use the hardcoded default shown in the comment.
+# CLI flags --y0/-y, --delta-y/-d, --n-cores/-c override the values here when provided.
+
+# --- WR wind transition ---
+
+# Surface He4 fraction threshold for WR onset  (default: 0.4)
+y_0: 0.4
+
+# Width of the He-poor -> He-rich transition  (default: 0.3)
+delta_y: 0.3
+
+# --- Parallel processing ---
+
+# Default number of worker processes; overridden by -c/--n-cores  (default: 36)
+n_processes: 36
+
+# --- He / CO core boundary (matches MESA controls.defaults) ---
+
+# Outermost shell where H1 mass fraction <= this value defines the He core boundary
+# Matches MESA he_core_boundary_h1_fraction  (default: 0.1)
+he_core_boundary_h1_fraction: 0.1
+
+# Outermost shell where He4 mass fraction <= this value defines the CO core boundary
+# Matches MESA co_core_boundary_he4_fraction  (default: 0.1)
+co_core_boundary_he4_fraction: 0.1
+
+# Minimum He4 (for He core) or C12+O16 (for CO core) fraction required at boundary shell
+# Matches MESA min_boundary_fraction  (default: 0.1)
+min_boundary_fraction: 0.1
+
+# --- CHE / flag detection thresholds ---
+
+# Central H1 fraction above which the star is still on the MS; used to detect
+# critically-rotating early stops  (default: 0.6)
+ms_h1_threshold: 0.6
+
+# Y_surf / Y_center ratio at or above which the star is classified as CHE  (default: 0.7)
+che_mix_ratio: 0.7
+
+# Central H1 fraction below which (combined with he_depl_he4_max and c_depl_c12_max)
+# the star is flagged as He-depleted / half-C-depleted  (default: 0.1)
+he_depl_h1_max: 0.1
+
+# Central He4 fraction below which (combined with he_depl_h1_max) the star is considered
+# past the TAMS for the half-C-depleted check  (default: 0.5)
+he_depl_he4_max: 0.5
+
+# Central C12 fraction below which the star is flagged as half-C-depleted  (default: 0.3)
+c_depl_c12_max: 0.3
+
+# Central H1 fraction below which the star is fully H-depleted (used in crash check)  (default: 1.0e-3)
+crash_h1_max: 1.0e-3
+
+# Central He4 fraction below which the star is He-depleted (used in crash check)  (default: 0.1)
+crash_he4_max: 0.1
+
+# --- Fallback depletion profile search ---
+
+# When a saved depletion profile (H_depl.data etc.) is missing, the history is searched
+# for the first model where the central abundance drops below each threshold in order.
+# (default: [1.0e-3, 1.0e-2, 0.1])
+abundance_thresholds: [1.0e-3, 1.0e-2, 0.1]
