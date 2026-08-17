@@ -4,3 +4,4 @@ src/__pycache__
 .venv
 **/__pycache__/
 data/ip_pop*
+**/slurm*.out
