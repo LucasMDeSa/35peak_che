@@ -1,0 +1,70 @@
+# Settings for get_core_properties_v7.py
+# All keys are optional. Omit a key to use the hardcoded default shown in the comment.
+# CLI flags --y0/-y, --delta-y/-d, --n-cores/-c override the values here when provided.
+
+# --- Processing ---
+
+# for parallelization; overridden by -c/--n-cores  (default: 1)
+n_processes: 1
+
+# name of output .h5 file; overridden by --output-title (default: core_props_df.h5)
+output_title: "core_props_df_v7.h5"
+
+# --- WR wind transition ---
+
+# Surface He4 fraction threshold for WR (He-rich) wind onset  (default: 0.4)
+y_0: 0.4
+
+# Width of the He-poor -> He-rich transition  (default: 0.3)
+delta_y: 0.3
+
+# --- He / CO core boundary ---
+
+# He core boundary: outermost shell where h1 <= this
+# default: 0.1 (MESA r24.03.1)
+he_core_boundary_h1_fraction: 0.1
+
+# CO core boundary: outermost shell where he4 <= this
+# default : 0.1 (MESA r24.03.1)
+co_core_boundary_he4_fraction: 0.1
+
+# Minimum he4 (He core) or c12+o16 (CO core) fraction to define core boundary
+# default: 0.1 (MESA r24.03.1 )
+min_boundary_fraction: 0.1
+
+# --- CHE / flag detection thresholds ---
+
+# Models that stop with center_h1 > this are flagged as critical rotation at ZAMS
+# default: 0.6
+ms_h1_threshold: 0.6
+
+# Y_surf / Y_center > this for the whole MS -> CHE
+# default: 0.7
+min_he4_ratio: 0.7
+
+# center_h1 > this -> depletion checks
+# default: 0.1
+he_depl_h1_max: 0.1
+
+# center_h1 < he_depl_h1_max & center_he4 < this -> past TAMS
+# default: 0.5
+he_depl_he4_max: 0.5
+
+# center_h1, center_he4 < previous, center_c12 < this -> halfway C burning
+# default: 0.3
+c_depl_c12_max: 0.3
+
+# center_h1 < this -> H depleted
+# default: 1.0e-3
+crash_h1_max: 1.0e-3
+
+# center_h1 < crash_h1_max & center_he4 < this -> He depleted
+# default: 0.1
+crash_he4_max: 0.1
+
+# --- Fallback depletion profile search ---
+
+# When a named depletion profile is missing, the history is searched for the
+# first model where center abundance drops below each threshold in order.
+# default: [1.0e-3, 1.0e-2, 0.1]
+abundance_thresholds: [1.0e-3, 1.0e-2, 0.1]
