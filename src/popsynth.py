@@ -816,6 +816,7 @@ class PMZLinearInterpolator:
         fill_value=np.nan,
         verbose=False,
         cut_non_he_depl=False,
+        extrapolate_z_islands=False,
     ):
         self.core_props_df = core_props_df
         self.var = var
@@ -823,6 +824,7 @@ class PMZLinearInterpolator:
         self.fill_value = fill_value
         self.verbose = verbose
         self.cut_non_he_depl = cut_non_he_depl
+        self.extrapolate_z_islands = extrapolate_z_islands
         self.p_interpolators = self._get_p_interpolators()
 
     def _get_p_interpolators(self):
@@ -908,28 +910,100 @@ class PMZLinearInterpolator:
             ip_x, ip_y, bounds_error=self.bounds_error, fill_value=self.fill_value
         )
 
-    def _get_z_interpolator(self, m_zams, p_spin_zams):
+    def _get_m_value_with_p_fill(self, m_zams, p_spin_zams, z_key):
+        """Mass interpolator with period-boundary borrowing.
+
+        For grid masses whose period interpolator doesn't cover p_spin_zams,
+        evaluates at the nearest period boundary instead. Returns the
+        interpolated value at m_zams, or NaN if unsuccessful.
+        """
         ip_x = []
         ip_y = []
-        for z_key in self.p_interpolators.keys():
+        for m_key, p_ip in self.p_interpolators[z_key].items():
+            val = p_ip(p_spin_zams)
+            if np.isnan(val) and not np.isnan(p_ip.x[0]):
+                if p_spin_zams < p_ip.x[0]:
+                    val = float(p_ip(p_ip.x[0]))
+                elif p_spin_zams > p_ip.x[-1]:
+                    val = float(p_ip(p_ip.x[-1]))
+            if not np.isnan(val):
+                ip_x.append(float(m_key))
+                ip_y.append(val)
+
+        if len(ip_x) == 0:
+            return np.nan
+
+        ip_x = np.array(ip_x)
+        ip_y = np.array(ip_y)
+        ip_y = ip_y[ip_x.argsort()]
+        ip_x = np.sort(ip_x)
+
+        m_ip = interp1d(ip_x, ip_y, bounds_error=False, fill_value=np.nan)
+        return float(m_ip(m_zams))
+
+    def _get_z_interpolator(self, m_zams, p_spin_zams):
+        z_keys = list(self.p_interpolators.keys())
+        ip_x = []
+        ip_y = []
+        for z_key in z_keys:
             m_interpolator = self._get_m_interpolator(p_spin_zams, z_key)
             ip_x.append(np.log10(float(z_key)))
             ip_y.append(m_interpolator(m_zams))
         ip_x = np.array(ip_x)
         ip_y = np.array(ip_y)
 
-        ip_y = ip_y[ip_x.argsort()]
-        ip_x = np.sort(ip_x)
+        order = ip_x.argsort()
+        ip_y = ip_y[order]
+        ip_x = ip_x[order]
+        z_keys_sorted = [z_keys[i] for i in order]
 
         valid = ~np.isnan(ip_y)
+
+        if self.extrapolate_z_islands and np.sum(valid) == 1:
+            island_idx = np.where(valid)[0][0]
+            z_island_key = z_keys_sorted[island_idx]
+
+            nearest_m_key = min(
+                self.p_interpolators[z_island_key].keys(),
+                key=lambda k: abs(float(k) - m_zams),
+            )
+            p_ip = self.p_interpolators[z_island_key][nearest_m_key]
+            if not np.isnan(p_ip.x[0]):
+                at_short_p = (p_spin_zams - p_ip.x[0]) < (p_ip.x[-1] - p_spin_zams)
+            else:
+                at_short_p = True
+
+            for i in range(len(ip_x)):
+                if valid[i]:
+                    continue
+                if at_short_p and ip_x[i] > ip_x[island_idx]:
+                    continue
+                if not at_short_p and ip_x[i] < ip_x[island_idx]:
+                    continue
+                filled_val = self._get_m_value_with_p_fill(
+                    m_zams, p_spin_zams, z_keys_sorted[i],
+                )
+                if not np.isnan(filled_val):
+                    ip_y[i] = filled_val
+                    valid[i] = True
+
         ip_x = ip_x[valid]
         ip_y = ip_y[valid]
 
         if len(ip_x) == 0:
             return lambda z: self.fill_value
 
+        if len(ip_x) == 1:
+            return lambda z: np.full_like(np.asarray(z, dtype=float), np.nan)
+
+        # Assuming the lower edge of the metallicity range is where winds become
+        # negligible, assume that below the lower edge properties are the same as 
+        # at the edge.
+        # Above the maximum metallicity, use fill_value (NaN), as winds become stronger.
+        # ip_x is sorted ascending, so ip_y[0] is the lowest-Z value.:q
         logz_interpolator = interp1d(
-            ip_x, ip_y, bounds_error=self.bounds_error, fill_value=self.fill_value
+            ip_x, ip_y, bounds_error=self.bounds_error,
+            fill_value=(ip_y[0], self.fill_value),
         )
 
         def z_interpolator(z):
@@ -999,6 +1073,7 @@ class PMZCorrectedInterpolator:
         fill_value=np.nan,
         verbose=False,
         cut_non_he_depl=False,
+        extrapolate_z_islands=False,
     ):
         assert isinstance(
             target_df, pd.DataFrame
@@ -1019,6 +1094,7 @@ class PMZCorrectedInterpolator:
         self.fill_value = fill_value
         self.verbose = verbose
         self.cut_non_he_depl = cut_non_he_depl
+        self.extrapolate_z_islands = extrapolate_z_islands
 
         # fitted parameters — set by fit()
         self._log10_A = 0.0
@@ -1100,6 +1176,7 @@ class PMZCorrectedInterpolator:
             fill_value=self.fill_value,
             verbose=self.verbose,
             cut_non_he_depl=self.cut_non_he_depl,
+            extrapolate_z_islands=self.extrapolate_z_islands,
         )
 
         mi, pi, z, var_obs = self._extract_target_arrays()
@@ -2062,6 +2139,7 @@ class FinalVarModel:
             Callable[[np.ndarray, np.ndarray], np.ndarray]
         ] = None,
         cut_non_he_depl=False,
+        extrapolate_z_islands=False,
         title="new",
         n_processes=1,
         verbose=False,
@@ -2078,6 +2156,7 @@ class FinalVarModel:
         self.cip = None
         self.model_to_use = "none"
         self.cut_non_he_depl = cut_non_he_depl
+        self.extrapolate_z_islands = extrapolate_z_islands
         self.che_mask_getter = che_mask_getter
         self.title = title
         self.n_processes = n_processes
@@ -2103,6 +2182,7 @@ class FinalVarModel:
                 correction_factors=self.correction_factors,
                 **self.DEFAULT_LINEARINTERPOLATOR_KWARGS,
                 cut_non_he_depl=self.cut_non_he_depl,
+                extrapolate_z_islands=self.extrapolate_z_islands,
             )
             self.cip.fit()
             self._vec_get_var = np.vectorize(self.cip.get_var)
@@ -2135,6 +2215,8 @@ class FinalVarModel:
                 self.core_props_df,
                 self.var,
                 **self.DEFAULT_LINEARINTERPOLATOR_KWARGS,
+                cut_non_he_depl=self.cut_non_he_depl,
+                extrapolate_z_islands=self.extrapolate_z_islands,
             )
             self._vec_get_var = np.vectorize(self.lip.get_var)
             self.model_to_use = "interpolator"
