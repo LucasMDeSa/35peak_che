@@ -29,6 +29,9 @@ CHE_LOWER_SLOPE = 0.002  # msun/d
 CHE_UPPER_SLOPE = 0.02  # msun/d
 MIN_WIND_Z_DIV_ZSUN = 0.02
 
+# Tolerance for matching a query metallicity to a grid metallicity, in log10(Z).
+LOG_Z_ATOL = 0.01
+
 # Pre-calculate physical constant factors to avoid repeated unit conversions
 # slowly replacing astropy for speed
 G_CGS = 6.67430e-8
@@ -942,6 +945,10 @@ class PMZLinearInterpolator:
         return float(m_ip(m_zams))
 
     def _get_z_interpolator(self, m_zams, p_spin_zams):
+        """For one star, compute the target var for each metallicity in z_keys."""
+
+        # STEP 1 — look the star up at every grid metallicity
+        # Fill ip_x with log10(z) and ip_y with var at z
         z_keys = list(self.p_interpolators.keys())
         ip_x = []
         ip_y = []
@@ -952,17 +959,27 @@ class PMZLinearInterpolator:
         ip_x = np.array(ip_x)
         ip_y = np.array(ip_y)
 
+        # STEP 2 — sort by metallicity, ascending; index 0 is now the wind floor
+        # Sort by metallcity
         order = ip_x.argsort()
         ip_y = ip_y[order]
         ip_x = ip_x[order]
         z_keys_sorted = [z_keys[i] for i in order]
 
+        # STEP 3 — mark which metallicities produced a number
+        # Create a bool array. True where not a NaN
         valid = ~np.isnan(ip_y)
 
+        # STEP 4 — island filling
+        # If only one metallicity is not a NaN, and extrapolate_z_islands is True,
+        # partially fill the row
         if self.extrapolate_z_islands and np.sum(valid) == 1:
+            # STEP 4a — identify island metallicity Z_i at index i
             island_idx = np.where(valid)[0][0]
             z_island_key = z_keys_sorted[island_idx]
 
+            # STEP 4b/4c — recover period range of nearest mass, at this metallicity
+            # in the input grid, and which end of it the star sits nearer.
             nearest_m_key = min(
                 self.p_interpolators[z_island_key].keys(),
                 key=lambda k: abs(float(k) - m_zams),
@@ -971,15 +988,22 @@ class PMZLinearInterpolator:
             if not np.isnan(p_ip.x[0]):
                 at_short_p = (p_spin_zams - p_ip.x[0]) < (p_ip.x[-1] - p_spin_zams)
             else:
+                # Dummy definition. If the period range has no valid data, this does not matter,
+                # because borrowing will always return NaN
                 at_short_p = True
 
+            # STEP 4d — filling logic
             for i in range(len(ip_x)):
+                # Skip the valid island
                 if valid[i]:
                     continue
+                # Do not fill z > z_i for short periods
                 if at_short_p and ip_x[i] > ip_x[island_idx]:
                     continue
+                # Do not fill z < z_i for long periods
                 if not at_short_p and ip_x[i] < ip_x[island_idx]:
                     continue
+                # If data to borrow is available, fill the value
                 filled_val = self._get_m_value_with_p_fill(
                     m_zams, p_spin_zams, z_keys_sorted[i],
                 )
@@ -987,25 +1011,62 @@ class PMZLinearInterpolator:
                     ip_y[i] = filled_val
                     valid[i] = True
 
+        # STEP 5 — check whether wind floor metallicity has valid data
+        # at this M,P
+        floor_available = bool(valid[0])
+
+        # STEP 6 — drop NaNs, interpolate over the rest
         ip_x = ip_x[valid]
         ip_y = ip_y[valid]
 
+
+        # STEP 7 — no valid data
         if len(ip_x) == 0:
             return lambda z: self.fill_value
 
+        # STEP 8 — single valid metallicity, i.e. an island
+        # TO-DO: check if this is redundant
+        # only edge cases should survive as islands at this point
+        # but the writing implies actual islands can survive
         if len(ip_x) == 1:
-            return lambda z: np.full_like(np.asarray(z, dtype=float), np.nan)
+            if not self.extrapolate_z_islands:
+                return lambda z: np.full_like(
+                    np.asarray(z, dtype=float), self.fill_value
+                )
 
-        # Assuming the lower edge of the metallicity range is where winds become
-        # negligible, assume that below the lower edge properties are the same as 
-        # at the edge.
-        # Above the maximum metallicity, use fill_value (NaN), as winds become stronger.
-        # ip_x is sorted ascending, so ip_y[0] is the lowest-Z value.:q
+            only_x, only_y = ip_x[0], ip_y[0]
+
+            if floor_available:
+                # Island at the wind floor: propagate downward, nothing above.
+                return lambda z: np.where(
+                    np.log10(np.asarray(z, dtype=float)) <= only_x + LOG_Z_ATOL,
+                    only_y,
+                    self.fill_value,
+                )
+
+            # This case should only be reached by a sigle valid metallicity that is also the 
+            # global maximum, or by the CHE window cusp in M,P,Z space.
+            # The latter case does not propagate by definition, the second could propagate
+            # upwards, but is not a good approximant for higher metallicities, so the range
+            # is clamped instead and Z>Z_global_max returns fill_value (NaN).
+            # TO-DO: is every case covered? Can non-physical cases get here?
+            return lambda z: np.where(
+                np.isclose(
+                    np.log10(np.asarray(z, dtype=float)), only_x,
+                    rtol=0, atol=LOG_Z_ATOL,
+                ),
+                only_y,
+                self.fill_value,
+            )
+
+        # STEP 9 — two or more valid metallicities: interpolate in log10(Z)
         logz_interpolator = interp1d(
             ip_x, ip_y, bounds_error=self.bounds_error,
-            fill_value=(ip_y[0], self.fill_value),
+            fill_value=(ip_y[0] if floor_available else self.fill_value, # propagate z_global_min if not nan, otherwise nan
+                        self.fill_value), # nan above z_global_max
         )
 
+        # STEP 10 — wrap so the returned function takes Z directly
         def z_interpolator(z):
             return logz_interpolator(np.log10(z))
 
