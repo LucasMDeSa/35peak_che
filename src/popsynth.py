@@ -1,5 +1,6 @@
 from functools import wraps
 from typing import Callable, Optional
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -31,6 +32,12 @@ MIN_WIND_Z_DIV_ZSUN = 0.02
 
 # Tolerance for matching a query metallicity to a grid metallicity, in log10(Z).
 LOG_Z_ATOL = 0.01
+
+# The 8 in-plane neighbours of a grid node, at its own metallicity.
+IN_PLANE_NEIGHBOURS = (
+    (+1, 0), (+1, +1), (0, +1), (-1, +1),
+    (-1, 0), (-1, -1), (0, -1), (+1, -1),
+)
 
 # Pre-calculate physical constant factors to avoid repeated unit conversions
 # slowly replacing astropy for speed
@@ -829,6 +836,7 @@ class PMZLinearInterpolator:
         self.cut_non_he_depl = cut_non_he_depl
         self.extrapolate_z_islands = extrapolate_z_islands
         self.p_interpolators = self._get_p_interpolators()
+        self._check_training_topology()
 
     def _get_p_interpolators(self):
         """Sets p interpolators for all m_zams and z_key combinations."""
@@ -839,6 +847,107 @@ class PMZLinearInterpolator:
                 p_interpolator = self._get_p_interpolator(m_key, z_key)
                 p_interpolators[z_key][m_key] = p_interpolator
         return p_interpolators
+
+    @staticmethod
+    def _fmt_cells(cells, limit=8):
+        """'(30, 0.7, 0.1000), (35, 0.8, 0.2000), ... (+3 more)'"""
+        shown = ", ".join(
+            "(" + ", ".join(f"{v:g}" if isinstance(v, float) else str(v) for v in c) + ")"
+            for c in cells[:limit]
+        )
+        more = f", ... (+{len(cells) - limit} more)" if len(cells) > limit else ""
+        return f"Cells: {shown}{more}"
+
+    def _training_node_grid(self):
+        """Return boolean (m, p, z) array of CHE nodes with valid training data."""
+        df = self.core_props_df
+        sel = df.is_che & ~df.is_merger_at_zams
+        if self.cut_non_he_depl:
+            sel = sel & df.is_He_depleted
+        sel = sel & df[self.var].notna() & df.p_spin_zams.notna()
+        if not sel.any():
+            return None
+
+        m_ax = np.unique(df.m_zams.dropna().values)
+        p_ax = np.unique(np.round(df.p_spin_zams.dropna().values, 4))
+        z_ax = sorted(df.z_key.unique(), key=float)
+        m_of = {v: i for i, v in enumerate(m_ax)}
+        p_of = {v: i for i, v in enumerate(p_ax)}
+        z_of = {v: i for i, v in enumerate(z_ax)}
+
+        sub = df[sel]
+        node = np.zeros((len(m_ax), len(p_ax), len(z_ax)), dtype=bool)
+        node[
+            sub.m_zams.map(m_of).values,
+            sub.p_spin_zams.round(4).map(p_of).values,
+            sub.z_key.map(z_of).values,
+        ] = True
+        return node, m_ax, p_ax, z_ax
+
+    def _check_training_topology(self):
+        """Warn when the training data's CHE coverage is not physically continuous."""
+        built = self._training_node_grid()
+        if built is None:
+            return
+        node, m_ax, p_ax, z_ax = built
+        self._warn_isolated_nodes(node, m_ax, p_ax, z_ax)
+        self._warn_z_pattern(node, m_ax, p_ax)
+
+    def _warn_isolated_nodes(self, node, m_ax, p_ax, z_ax):
+        """Warn when a CHE node has no in-plane CHE neighbours."""
+        n_m, n_p, _ = node.shape
+        padded = np.zeros((n_m + 2, n_p + 2, node.shape[2]), dtype=bool)
+        padded[1:-1, 1:-1, :] = node
+        neighbour = np.zeros_like(node)
+        for dm, dp in IN_PLANE_NEIGHBOURS:
+            neighbour |= padded[1 + dm : 1 + dm + n_m, 1 + dp : 1 + dp + n_p, :]
+
+        isolated = node & ~neighbour
+        if not isolated.any():
+            return
+        cells = [(m_ax[a], p_ax[b], z_ax[c]) for a, b, c in np.argwhere(isolated)]
+        warnings.warn(
+            f"[PMZLinearInterpolator var={self.var}] {len(cells)} isolated CHE "
+            f"node(s): no CHE neighbour among the 8 in-plane cells at the same "
+            f"metallicity. Are these crashed neighbors? Interpolator will continue. "
+            f"{self._fmt_cells(cells)}",
+            UserWarning,
+            stacklevel=4,
+        )
+
+    def _warn_z_pattern(self, node, m_ax, p_ax):
+        """Warn when a valid Z run does not touch the global Z range edges."""
+        interior, fragmented = [], []
+        for a, b in np.argwhere(node.any(axis=2)):
+            col = node[a, b, :]
+            n_runs = int((np.diff(np.r_[0, col.astype(int), 0]) == 1).sum())
+            pattern = "".join("O" if v else "X" for v in col)
+            if n_runs > 1:
+                fragmented.append((m_ax[a], p_ax[b], pattern))
+            elif not col[0] and not col[-1]:
+                interior.append((m_ax[a], p_ax[b], pattern))
+
+        # If O indicates a valid node and X an invalid one, example cases are
+        # Interior: XOOXX
+        # Fragmented: XOXOX, XOXOO
+        if interior:
+            warnings.warn(
+                f"[PMZLinearInterpolator var={self.var}] {len(interior)} (m, p) "
+                f"column(s) whose valid metallicities form one run reaching "
+                f"neither metallicity global minimum nor maximum. Is this a broad CHE window cusp or error? Interpolator will continue. "
+                f"{self._fmt_cells(interior)}",
+                UserWarning,
+                stacklevel=4,
+            )
+        if fragmented:
+            warnings.warn(
+                f"[PMZLinearInterpolator var={self.var}] {len(fragmented)} (m, p) "
+                f"column(s) whose valid metallicities form two or more separate "
+                f"runs. Check input data for crashed CHE cases. Interpolator will smooth over gaps. "
+                f"{self._fmt_cells(fragmented)}",
+                UserWarning,
+                stacklevel=4,
+            )
 
     def _get_p_interpolator(self, m_key, z_key):
         ip_data = self.core_props_df.copy()
@@ -1016,6 +1125,9 @@ class PMZLinearInterpolator:
         floor_available = bool(valid[0])
 
         # STEP 6 — drop NaNs, interpolate over the rest
+        # TO-DO: the shape of the valid run is checked once at construction
+        # (_check_training_topology), not here. At runtime interior NaNs are just
+        # dropped and step 9 interpolates across them. No explicit handling yet.
         ip_x = ip_x[valid]
         ip_y = ip_y[valid]
 
