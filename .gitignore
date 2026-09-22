@@ -5,3 +5,7 @@ src/__pycache__
 **/__pycache__/
 data/ip_pop*
 **/slurm*.out
+debugging/
+docs/
+publication_notebooks/
+data/archive/
