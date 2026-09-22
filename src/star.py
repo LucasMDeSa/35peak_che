@@ -696,6 +696,18 @@ class PPISNConfig:
     @property
     def pd_th(self):
         return self.m_co_pd if self.threshold_core == "co" else self.m_he_pd
+
+
+@dataclass
+class FaragHighResPPISNConfig(PPISNConfig):
+    """Farag+22 PPISN configuration for the 5m_2h_10t_D res and 2015-tp DeBoer c12ag rates."""
+
+    m_he_ppisn: float = 62
+    m_he_pisn: float = 70
+    m_co_ppisn: float = 62
+    m_co_pisn: float = 70
+
+
 def get_moment_of_inertia(prof, stop_i=-1):
     r_arr = prof.radius[::-1] * u.Rsun.to(u.cm)
     rho_arr = 10.0 ** prof.logRho[::-1]
