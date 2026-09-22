@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from functools import wraps
 from typing import Callable, Optional
 import warnings
@@ -7,6 +8,8 @@ import pandas as pd
 import astropy.units as u
 import astropy.constants as ct
 from scipy.interpolate import interp1d
+from scipy.stats import norm as NormDist
+from scipy.interpolate import CubicSpline
 import matplotlib.pyplot as plt
 
 import pymc as pm
@@ -15,6 +18,7 @@ import pytensor.tensor as pt
 from pytensor.compile.ops import as_op
 
 from .constants import Z_SUN
+from .util import DATA_DIR
 from .binary import unitless_coalescence_time, a_from_p
 
 STAGES = ["zams", "wr0", "wr1", "tams", "tahems", "cdepl", "odepl", "f"]
@@ -191,6 +195,131 @@ def get_complete_core_props_df(path, fast=True):
         else:
             core_props_df = process_core_props_df(core_props_df)
     return core_props_df
+
+
+# METALLICITY DISTRIBUTIONS
+# Adapted from COMPAS' CosmicIntegrator!
+
+"""Metallicity distributions."""
+
+
+def find_metallicity_distribution(
+    redshifts,
+    min_logz_compas,
+    max_logz_compas,
+    mu_0=0.035,
+    mu_z=-0.23,
+    sigma_0=0.39,
+    sigma_z=0.0,
+    alpha=0.0,
+    min_logz=-12.0,
+    max_logz=0.0,
+    step_logz=0.01,
+):
+    """
+    Calculate the distribution of metallicities at different redshifts using a log skew normal distribution.
+
+    The log-normal distribution
+    is a special case of this log skew normal distribution and is
+    retrieved by setting the skewness to zero (alpha=0). Based on the
+    method in Neijssel+19. Default values retrieve the dP/dZ
+    distribution used in Neijssel+19. See van Son+2022 for skewed
+    log-normal distribution.
+
+    Adapted from COMPAS's CosmicIntegrator tool, original at
+    https://github.com/TeamCOMPAS/COMPAS/tree/dev/compas_python_utils/cosmic_integratio
+
+    NOTE: This assumes that metallicities in COMPAS are drawn from a
+    flat-in-log distribution!
+
+    Args:
+        max_redshift       --> [float] Max redshift for calculation
+        redshift_step      --> [float] Step used in redshift calculation
+        min_logz_compas    --> [float] Min logZ value that COMPAS samples
+        max_logz_compas    --> [float] Max logZ value that COMPAS samples
+        mu_0               --> [float] Location (mean in normal) at z=0
+        mu_z               --> [float] Redshift scaling of location
+        sigma_0            --> [float] Scale (variance in normal) at z=0
+        sigma_z            --> [float] Redshift scaling of the scale
+        alpha              --> [float] Shape (skewness, alpha=0 gives
+                                  normal dist as in Neijssel+19)
+        min_logz           --> [float] Min logZ for dPdlogZ calculation
+        max_logz           --> [float] Max logZ for dPdlogZ calculation
+        step_logz          --> [float] Step size for logZ range
+
+    Returns:
+        dPdlogZ            --> [2D float array] Probability of getting a
+                                  particular logZ at a certain redshift
+        metallicities      --> [list of floats] Metallicities at which
+                                  dPdlogZ is evaluated
+        p_draw_metallicity --> [float] Probability of drawing a certain
+                                  metallicity in COMPAS
+    """
+    # Log-linear redshift dependence of sigma
+    sigma = sigma_0 * 10 ** (sigma_z * redshifts)
+
+    # Mean metallicities evolve with redshift (Langer & Norman 2006)
+    mean_metallicities = mu_0 * 10 ** (mu_z * redshifts)
+
+    # Rewrite expected value of log-skew-normal to retrieve mu
+    beta = alpha / (np.sqrt(1 + alpha**2))
+    PHI = NormDist.cdf(beta * sigma)
+    mu_metallicities = np.log(mean_metallicities / 2.0 / (np.exp(0.5 * sigma**2) * PHI))
+
+    # Create a range of metallicities (x-values or random variables)
+    log_metallicities = np.arange(min_logz, max_logz + step_logz, step_logz)
+    metallicities = np.exp(log_metallicities)
+
+    # Probabilities of log-skew-normal (without 1/Z factor)
+    dPdlogZ = (
+        2.0
+        / sigma[:, np.newaxis]
+        * NormDist.pdf(
+            (log_metallicities - mu_metallicities[:, np.newaxis]) / sigma[:, np.newaxis]
+        )
+        * NormDist.cdf(
+            alpha
+            * (log_metallicities - mu_metallicities[:, np.newaxis])
+            / sigma[:, np.newaxis]
+        )
+    )
+
+    # Normalize distribution over all metallicities
+    norm = dPdlogZ.sum(axis=-1) * step_logz
+    dPdlogZ = dPdlogZ / norm[:, np.newaxis]
+
+    # Flat-in-log distribution for sampled metallicity in COMPAS
+    p_draw_metallicity = 1 / (max_logz_compas - min_logz_compas)
+
+    return dPdlogZ, metallicities, p_draw_metallicity
+
+
+def get_metallicity_distribution_ip(redshift):
+    mu_0 = 0.025
+    mu_z = -0.049
+    sigma_0 = 1.122
+    sigma_z = 0.049
+    alpha = -1.778
+    min_logz = -12.0
+    max_logz = 0.0
+    step_logz = 0.01
+    min_z = 0.0005 * Z_SUN
+    max_z = Z_SUN
+    dPdlogZ, metallicities, p_draw_metallicity = find_metallicity_distribution(
+        redshifts=np.asarray([redshift]),
+        min_logz_compas=np.log(min_z),
+        max_logz_compas=np.log(max_z),
+        mu_0=mu_0,
+        mu_z=mu_z,
+        sigma_0=sigma_0,
+        sigma_z=sigma_z,
+        alpha=alpha,
+        min_logz=min_logz,
+        max_logz=max_logz,
+        step_logz=step_logz,
+    )
+    spline = CubicSpline(np.log10(metallicities / Z_SUN), dPdlogZ[0])
+    return spline
 
 
 # POPULATION SYNTHESIS TOOLS

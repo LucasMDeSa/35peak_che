@@ -11,48 +11,37 @@ from scipy.stats import norm as NormDist
 from cosmic_integration.cosmology import get_cosmology
 
 from .constants import Z_SUN
-
+from .popsynth import find_metallicity_distribution, SamplingConfig
 
 DEFAULT_BINARY_FRACTION = 0.7
-DEFAULT_MU0 = 0.025
-DEFAULT_MUZ = -0.049
-DEFAULT_SIGMA0 = 1.122
-DEFAULT_SIGMAZ = 0.049
-DEFAULT_ALPHA = -1.778
+"""Defaults from van Son et al. """
+VANSON2022_SKEWED_GAUSSIAN = dict(
+    mu_0=0.025,
+    mu_z=-0.049,
+    sigma_0=1.122,
+    sigma_z=0.049,
+    alpha=-1.778,
+)
 
 
 @dataclass(frozen=True)
 class RedshiftGridConfig:
     max_redshift: float = 10.0
-    max_redshift_detection: float = 1.0
     redshift_step: float = 0.01
-    z_first_sf: float = 10.0
+    redshift_first_sf: float = 10.0
     cosmology: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class MetallicityConfig:
-    min_z_div_zsun: float = 0.0005
-    max_z_div_zsun: float = 1.0
-    mu0: float = DEFAULT_MU0
-    muz: float = DEFAULT_MUZ
-    sigma0: float = DEFAULT_SIGMA0
-    sigmaz: float = DEFAULT_SIGMAZ
-    alpha: float = DEFAULT_ALPHA
+    mu_0: float = VANSON2022_SKEWED_GAUSSIAN["mu_0"]
+    mu_z: float = VANSON2022_SKEWED_GAUSSIAN["mu_z"]
+    sigma_0: float = VANSON2022_SKEWED_GAUSSIAN["sigma_0"]
+    sigma_z: float = VANSON2022_SKEWED_GAUSSIAN["sigma_z"]
+    alpha: float = VANSON2022_SKEWED_GAUSSIAN["alpha"]
     min_logz: float = -12.0
     max_logz: float = 0.0
     step_logz: float = 0.01
-
-
-@dataclass(frozen=True)
-class SamplingConfig:
-    m_min: float = 10.0
-    m_max: float = 300.0
-    q_min: float = 0.7
-    q_max: float = 1.0
-    p_min_days: float = 10.0**0.1
-    p_max_days: float = 10.0**4.0
-    binary_fraction: float = DEFAULT_BINARY_FRACTION
 
 
 @dataclass(frozen=True)
@@ -62,6 +51,15 @@ class RateComputationConfig:
     sampling: SamplingConfig = SamplingConfig()
     delay_time_scale_myr: float = 1.0
     delay_time_floor_myr: float = 1e5
+    binary_fraction: float = DEFAULT_BINARY_FRACTION
+    include_brown_dwarfs: bool = False
+    absolute_logp_min: float = -1.
+    absolute_logp_max: float = 8.
+    period_logp_exponent: float = 0.0
+    imf_brown_dwarf_m_min: float = 0.01
+    imf_red_dwarf_m_min: float = 0.08
+    imf_m_break: float = 0.5
+    imf_m_max: float = 300.0
 
 
 @dataclass
@@ -126,10 +124,9 @@ def calculate_redshift_related_params(
     redshifts = np.arange(
         0.0, config.max_redshift + config.redshift_step, config.redshift_step
     )
-    n_redshifts_detection = int(config.max_redshift_detection / config.redshift_step)
 
     times = cosmology.age(redshifts).to(u.Myr).value
-    time_first_sf = cosmology.age(config.z_first_sf).to(u.Myr).value
+    time_first_sf = cosmology.age(config.redshift_first_sf).to(u.Myr).value
 
     distances = cosmology.luminosity_distance(redshifts).to(u.Mpc).value
     if len(distances) > 0:
@@ -142,7 +139,6 @@ def calculate_redshift_related_params(
 
     return (
         redshifts,
-        n_redshifts_detection,
         times,
         time_first_sf,
         distances,
@@ -282,30 +278,28 @@ def compute_merger_rates(
             "Population arrays must include at least metallicity and mass columns"
         )
 
-    redshifts, _, times_myr, time_first_sf_myr, _, _ = (
-        calculate_redshift_related_params(config.redshift)
+    redshifts, times_myr, time_first_sf_myr, _, _ = calculate_redshift_related_params(
+        config.redshift
     )
 
-    mass_formed_per_binary = _estimate_mass_formed_per_binary(
-        full_population, config.sampling
-    )
+    mass_formed_per_binary = _estimate_mass_formed_per_binary(full_population, config)
 
     sfrd = find_sfr(redshifts)
-    n_systems = len(merger_population)
+    n_systems = len(full_population)
     average_sf_mass_needed = mass_formed_per_binary * n_systems
     n_formed = sfrd / average_sf_mass_needed
 
-    min_z = config.metallicity.min_z_div_zsun * Z_SUN
-    max_z = config.metallicity.max_z_div_zsun * Z_SUN
+    min_z = config.sampling.min_z_div_zsun * Z_SUN
+    max_z = config.sampling.max_z_div_zsun * Z_SUN
 
     dp_dlogz, metallicities_abs, p_draw_metallicity = find_metallicity_distribution(
         redshifts=redshifts,
         min_logz_compas=np.log(min_z),
         max_logz_compas=np.log(max_z),
-        mu0=config.metallicity.mu0,
-        muz=config.metallicity.muz,
-        sigma0=config.metallicity.sigma0,
-        sigmaz=config.metallicity.sigmaz,
+        mu_0=config.metallicity.mu_0,
+        mu_z=config.metallicity.mu_z,
+        sigma_0=config.metallicity.sigma_0,
+        sigma_z=config.metallicity.sigma_z,
         alpha=config.metallicity.alpha,
         min_logz=config.metallicity.min_logz,
         max_logz=config.metallicity.max_logz,
@@ -763,7 +757,6 @@ __all__ = [
     "MetallicityConfig",
     "RateComputationConfig",
     "RedshiftGridConfig",
-    "SamplingConfig",
     "build_population_arrays",
     "calculate_redshift_related_params",
     "compute_crude_rate_density",
