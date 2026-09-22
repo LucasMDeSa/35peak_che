@@ -97,12 +97,27 @@ class MetallicityBinnedRateResult:
 
 
 @np.vectorize
-def _kroupa_imf(m: float) -> float:
-    if m < 0.08:
+def _kroupa_imf(
+    m: float, 
+    brown_dwarf_m_min: float = 0.01, 
+    red_dwarf_m_min: float = 0.08,
+    m_break: float = 0.5,
+    m_max: float = 300.0,
+    include_brown_dwarfs: bool = False
+    ) -> float:
+    if m < brown_dwarf_m_min:
         return 0.0
-    if m < 0.5:
-        return m**-1.3
-    return m**-2.3 / 2.0
+    elif m < red_dwarf_m_min:
+        if include_brown_dwarfs:
+            return m**-0.3
+        else:
+            return 0.0
+    elif m < m_break:
+        return m**-1.3 * red_dwarf_m_min
+    elif m < m_max:
+        return m**-2.3 * red_dwarf_m_min * m_break
+    else:
+        return 0.0
 
 
 def get_mass_fraction(
