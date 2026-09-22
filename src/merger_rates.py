@@ -164,39 +164,6 @@ def find_sfr(
     return sfr.to(u.Msun / u.yr / u.Gpc**3).value
 
 
-def find_metallicity_distribution(
-    redshifts: np.ndarray,
-    min_logz_compas: float,
-    max_logz_compas: float,
-    mu0: float,
-    muz: float,
-    sigma0: float,
-    sigmaz: float,
-    alpha: float,
-    min_logz: float,
-    max_logz: float,
-    step_logz: float,
-) -> Tuple[np.ndarray, np.ndarray, float]:
-    sigma = sigma0 * 10.0 ** (sigmaz * redshifts)
-    mean_metallicities = mu0 * 10.0 ** (muz * redshifts)
-
-    beta = alpha / np.sqrt(1.0 + alpha**2)
-    phi = NormDist.cdf(beta * sigma)
-    mu_metallicities = np.log(mean_metallicities / (2.0 * np.exp(0.5 * sigma**2) * phi))
-
-    log_metallicities = np.arange(min_logz, max_logz + step_logz, step_logz)
-    metallicities = np.exp(log_metallicities)
-
-    x = (log_metallicities - mu_metallicities[:, np.newaxis]) / sigma[:, np.newaxis]
-    dp_dlogz = 2.0 / sigma[:, np.newaxis] * NormDist.pdf(x) * NormDist.cdf(alpha * x)
-
-    norm = dp_dlogz.sum(axis=-1) * step_logz
-    dp_dlogz = dp_dlogz / norm[:, np.newaxis]
-
-    p_draw_metallicity = 1.0 / (max_logz_compas - min_logz_compas)
-    return dp_dlogz, metallicities, p_draw_metallicity
-
-
 def _estimate_mass_formed_per_binary(
     full_population: np.ndarray, sampling: SamplingConfig
 ) -> float:
