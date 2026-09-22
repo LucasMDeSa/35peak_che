@@ -1,6 +1,6 @@
 # Settings for get_core_properties_v7.py
 # All keys are optional. Omit a key to use the hardcoded default shown in the comment.
-# CLI flags --y0/-y, --delta-y/-d, --n-cores/-c override the values here when provided.
+# CLI flags --y0/-y, --delta-y/-d, --n-cores/-c, --output-title override the values here when provided.
 
 # --- Processing ---
 

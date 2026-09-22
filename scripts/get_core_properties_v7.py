@@ -1209,7 +1209,12 @@ def main():
         default=True,
         help="Use H, He, C and O profiles, if avaiable",
     )
-
+    parser.add_argument(
+        "--output-title",
+        type=str,
+        default="core_properties_v7.h5",
+        help="Output filename for core properties hdf5 dataframe",
+    )
     args = parser.parse_args()
 
     # Resolve settings file: explicit --settings, then default filename in script dir
@@ -1232,6 +1237,8 @@ def main():
         settings["delta_y"] = args.delta_y
     if args.n_cores is not None:
         settings["n_processes"] = args.n_cores
+    if args.output_title is not None:
+        settings["core_props_title"] = args.output_title
 
     _apply_settings(settings)
 
