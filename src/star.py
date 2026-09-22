@@ -1,5 +1,6 @@
 from time import time
 from pathlib import Path
+from dataclasses import dataclass
 
 import numpy as np
 from scipy.optimize import fmin
@@ -663,6 +664,38 @@ def mixed_model_dict(metallicity):
     )
 
 
+## PAIR INSTABILITY ##
+
+
+@dataclass
+class PPISNConfig:
+    # Renzo+2020 Delta M_PPI fit parameters
+    c3_log_slope: float = 0.0006
+    c3_intercept: float = 0.0054
+    c2: float = -0.0013
+    m_co_ref: float = 34.8
+    # He-core mass thresholds
+    m_he_ppisn: float = 54
+    m_he_pisn: float = 72
+    m_he_pd: float = 133
+    # CO-core mass thresholds
+    m_co_ppisn: float = 49
+    m_co_pisn: float = 65
+    m_co_pd: float = 133
+    # Which core mass to use for the fate thresholds: 'he' or 'co'
+    threshold_core: str = "he"
+
+    @property
+    def ppisn_th(self):
+        return self.m_co_ppisn if self.threshold_core == "co" else self.m_he_ppisn
+
+    @property
+    def pisn_th(self):
+        return self.m_co_pisn if self.threshold_core == "co" else self.m_he_pisn
+
+    @property
+    def pd_th(self):
+        return self.m_co_pd if self.threshold_core == "co" else self.m_he_pd
 def get_moment_of_inertia(prof, stop_i=-1):
     r_arr = prof.radius[::-1] * u.Rsun.to(u.cm)
     rho_arr = 10.0 ** prof.logRho[::-1]
