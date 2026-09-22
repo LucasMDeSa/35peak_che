@@ -136,8 +136,29 @@ def get_mass_fraction(
     return pop_m / full_m
 
 
-def get_mass_ratio_fraction(q_min: float, q_max: float) -> float:
-    return q_max - q_min
+def get_mass_ratio_fraction(
+    q_min: float,
+    q_max: float,
+    m1_min: float,
+    m1_max: float,
+    include_brown_dwarfs: bool = False,
+    imf_kwargs: Optional[dict] = None,
+) -> float:
+    kw = imf_kwargs or {}
+    norm = quad(lambda m: _kroupa_imf(m, **kw), m1_min, m1_max)[0]
+    if norm == 0:
+        return q_max - q_min
+
+    if kw != {}:
+        m_low = kw['brown_dwarf_m_min'] if include_brown_dwarfs else kw['red_dwarf_m_min']
+    else:
+        m_low = 0.08
+
+    def integrand(m1):
+        q_floor = max(q_min, m_low / m1)
+        return _kroupa_imf(m1, **kw) * max(0.0, q_max - q_floor)
+
+    return quad(integrand, m1_min, m1_max)[0] / norm
 
 
 def get_period_fraction(
