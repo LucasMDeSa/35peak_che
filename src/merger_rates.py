@@ -162,11 +162,14 @@ def get_mass_ratio_fraction(
 
 
 def get_period_fraction(
-    p_min_days: float, p_max_days: float, opik_min: float = 0.1, opik_max: float = 8.0
+    p_min: float,
+    p_max: float,
+    absolute_logp_min: float = -1.0,
+    absolute_logp_max: float = 8.0,
 ) -> float:
-    logp_min = np.log10(p_min_days)
-    logp_max = np.log10(p_max_days)
-    return (logp_max - logp_min) / (opik_max - opik_min)
+    logp_min = np.log10(p_min)
+    logp_max = np.log10(p_max)
+    return (logp_max - logp_min) / (absolute_logp_max - absolute_logp_min)
 
 
 def calculate_redshift_related_params(
