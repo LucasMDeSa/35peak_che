@@ -39,8 +39,14 @@ LOG_Z_ATOL = 0.01
 
 # The 8 in-plane neighbours of a grid node, at its own metallicity.
 IN_PLANE_NEIGHBOURS = (
-    (+1, 0), (+1, +1), (0, +1), (-1, +1),
-    (-1, 0), (-1, -1), (0, -1), (+1, -1),
+    (+1, 0),
+    (+1, +1),
+    (0, +1),
+    (-1, +1),
+    (-1, 0),
+    (-1, -1),
+    (0, -1),
+    (+1, -1),
 )
 
 # Pre-calculate physical constant factors to avoid repeated unit conversions
@@ -981,7 +987,9 @@ class PMZLinearInterpolator:
     def _fmt_cells(cells, limit=8):
         """'(30, 0.7, 0.1000), (35, 0.8, 0.2000), ... (+3 more)'"""
         shown = ", ".join(
-            "(" + ", ".join(f"{v:g}" if isinstance(v, float) else str(v) for v in c) + ")"
+            "("
+            + ", ".join(f"{v:g}" if isinstance(v, float) else str(v) for v in c)
+            + ")"
             for c in cells[:limit]
         )
         more = f", ... (+{len(cells) - limit} more)" if len(cells) > limit else ""
@@ -1243,7 +1251,9 @@ class PMZLinearInterpolator:
                     continue
                 # If data to borrow is available, fill the value
                 filled_val = self._get_m_value_with_p_fill(
-                    m_zams, p_spin_zams, z_keys_sorted[i],
+                    m_zams,
+                    p_spin_zams,
+                    z_keys_sorted[i],
                 )
                 if not np.isnan(filled_val):
                     ip_y[i] = filled_val
@@ -1259,7 +1269,6 @@ class PMZLinearInterpolator:
         # dropped and step 9 interpolates across them. No explicit handling yet.
         ip_x = ip_x[valid]
         ip_y = ip_y[valid]
-
 
         # STEP 7 — no valid data
         if len(ip_x) == 0:
@@ -1285,7 +1294,7 @@ class PMZLinearInterpolator:
                     self.fill_value,
                 )
 
-            # This case should only be reached by a sigle valid metallicity that is also the 
+            # This case should only be reached by a sigle valid metallicity that is also the
             # global maximum, or by the CHE window cusp in M,P,Z space.
             # The latter case does not propagate by definition, the second could propagate
             # upwards, but is not a good approximant for higher metallicities, so the range
@@ -1293,8 +1302,10 @@ class PMZLinearInterpolator:
             # TO-DO: is every case covered? Can non-physical cases get here?
             return lambda z: np.where(
                 np.isclose(
-                    np.log10(np.asarray(z, dtype=float)), only_x,
-                    rtol=0, atol=LOG_Z_ATOL,
+                    np.log10(np.asarray(z, dtype=float)),
+                    only_x,
+                    rtol=0,
+                    atol=LOG_Z_ATOL,
                 ),
                 only_y,
                 self.fill_value,
@@ -1302,9 +1313,15 @@ class PMZLinearInterpolator:
 
         # STEP 9 — two or more valid metallicities: interpolate in log10(Z)
         logz_interpolator = interp1d(
-            ip_x, ip_y, bounds_error=self.bounds_error,
-            fill_value=(ip_y[0] if floor_available else self.fill_value, # propagate z_global_min if not nan, otherwise nan
-                        self.fill_value), # nan above z_global_max
+            ip_x,
+            ip_y,
+            bounds_error=self.bounds_error,
+            fill_value=(
+                (
+                    ip_y[0] if floor_available else self.fill_value
+                ),  # propagate z_global_min if not nan, otherwise nan
+                self.fill_value,
+            ),  # nan above z_global_max
         )
 
         # STEP 10 — wrap so the returned function takes Z directly
