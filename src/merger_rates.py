@@ -105,10 +105,20 @@ def _kroupa_imf(m: float) -> float:
     return m**-2.3 / 2.0
 
 
-def get_mass_fraction(m_min: float, m_max: float) -> float:
-    full_n = quad(_kroupa_imf, 0.08, np.inf)[0]
-    pop_n = quad(_kroupa_imf, m_min, m_max)[0]
-    return pop_n / full_n
+def get_mass_fraction(
+    m_min: float, m_max: float, include_brown_dwarfs: bool = False, imf_kwargs: Optional[dict] = None
+) -> float:
+    full_m = quad(
+        lambda m: m * _kroupa_imf(m, include_brown_dwarfs=include_brown_dwarfs, **(imf_kwargs or {})),
+        0.08,
+        max(300.0, m_max),
+    )[0]
+    pop_m = quad(
+        lambda m: m * _kroupa_imf(m, include_brown_dwarfs=include_brown_dwarfs, **(imf_kwargs or {})),
+        m_min,
+        m_max,
+    )[0]
+    return pop_m / full_m
 
 
 def get_mass_ratio_fraction(q_min: float, q_max: float) -> float:
