@@ -110,7 +110,7 @@ def get_model_dict(grid_folder):
     m1, p_orb dictionary."""
     d = dict()
     for model_folder in grid_folder.glob("m*_w*"):
-        if model_folder.suffix == ".log":
+        if model_folder.suffix == ".log" or not model_folder.is_dir():
             continue
         try:
             m, p, w = model_folder.name.replace("d", "e").split("_")
