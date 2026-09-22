@@ -1,4 +1,0 @@
-#!/bin/bash
-c=64
-settings_path="get_core_properties_v6_settings.yaml"
-srun -p cpu-single -t 10:00:00 --ntasks 1 -c $c python get_core_properties_v6.py -c $c -m 00_fiducial -p 00 --use-depletion-profiles TRUE
