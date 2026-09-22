@@ -221,19 +221,45 @@ def find_sfr(
 
 
 def _estimate_mass_formed_per_binary(
-    full_population: np.ndarray, sampling: SamplingConfig
+    full_population: np.ndarray, rate_computation: RateComputationConfig
 ) -> float:
-    m_frac = get_mass_fraction(sampling.m_min, sampling.m_max)
-    q_frac = get_mass_ratio_fraction(sampling.q_min, sampling.q_max)
-    p_frac = get_period_fraction(sampling.p_min_days, sampling.p_max_days)
-
-    total_frac = (
-        m_frac
-        * q_frac
-        * p_frac
-        * (1.0 - sampling.binary_fraction)
-        / sampling.binary_fraction
+    m_frac = get_mass_fraction(
+        rate_computation.sampling.m_min,
+        rate_computation.sampling.m_max,
+        include_brown_dwarfs=rate_computation.include_brown_dwarfs,
+        imf_kwargs={
+            "brown_dwarf_m_min": rate_computation.imf_brown_dwarf_m_min,
+            "red_dwarf_m_min": rate_computation.imf_red_dwarf_m_min,
+            "m_break": rate_computation.imf_m_break,
+            "m_max": rate_computation.imf_m_max,
+        },
     )
+    q_frac = get_mass_ratio_fraction(
+        rate_computation.sampling.q_min, 
+        rate_computation.sampling.q_max,
+        rate_computation.sampling.m_min,
+        rate_computation.sampling.m_max,
+        include_brown_dwarfs=rate_computation.include_brown_dwarfs,
+        imf_kwargs={
+            "brown_dwarf_m_min": rate_computation.imf_brown_dwarf_m_min,
+            "red_dwarf_m_min": rate_computation.imf_red_dwarf_m_min,
+            "m_break": rate_computation.imf_m_break,
+            "m_max": rate_computation.imf_m_max,
+        },
+    )
+    p_frac = get_period_fraction(
+        rate_computation.sampling.p_min,
+        rate_computation.sampling.p_max,
+        rate_computation.absolute_logp_min,
+        rate_computation.absolute_logp_max,
+    )
+    # binary factor accounting for mass in primaries, secondaries and singles
+    # assuming a uniform 0-1 q distribution
+    b_factor = (
+        1.5 + (1 - rate_computation.binary_fraction) / rate_computation.binary_fraction
+    )
+
+    total_frac = m_frac * q_frac * p_frac / b_factor
     return full_population[:, 1].sum() / len(full_population) / total_frac
 
 
