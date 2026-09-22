@@ -2,13 +2,12 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import astropy.units as u
+import astropy.cosmology as cosmology
 import numpy as np
 from scipy.integrate import quad
 from scipy.interpolate import interp1d
 from scipy.stats import gaussian_kde
 from scipy.stats import norm as NormDist
-
-from cosmic_integration.cosmology import get_cosmology
 
 from .constants import Z_SUN
 from .popsynth import find_metallicity_distribution, SamplingConfig
@@ -22,6 +21,14 @@ VANSON2022_SKEWED_GAUSSIAN = dict(
     sigma_z=0.049,
     alpha=-1.778,
 )
+
+
+def get_cosmology(name="WMAP9"):
+    try:
+        return getattr(cosmology, name)
+    except AttributeError:
+        print(f"Cosmology {name} not found. Defaulting to WMAP9.")
+        return getattr(cosmology, "WMAP9")
 
 
 @dataclass(frozen=True)
