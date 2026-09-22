@@ -39,6 +39,7 @@ from src.constants import CLIGHT_CGS, STANDARD_CGRAV_CGS, MSUN_TO_CGS, DAY_TO_CG
 SEC_TO_DAY = 1.0 / DAY_TO_CGS
 
 _DEFAULTS = {
+    "map_grid": False,
     # WR transition
     "y_0": 0.4,
     "delta_y": 0.3,
@@ -76,7 +77,7 @@ def load_settings(path=None):
 
 def _apply_settings(settings):
     """Write settings dict into module-level globals used by all workers."""
-    global y_0, delta_y, n_processes, core_props_title
+    global y_0, delta_y, n_processes, core_props_title, map_grid
     global he_core_boundary_h1_fraction, co_core_boundary_he4_fraction, min_boundary_fraction
     global ms_h1_threshold, min_he4_ratio
     global he_depl_h1_max, he_depl_he4_max, c_depl_c12_max
@@ -96,6 +97,7 @@ def _apply_settings(settings):
     crash_he4_max = settings["crash_he4_max"]
     abundance_thresholds = settings["abundance_thresholds"]
     core_props_title = settings["core_props_title"]
+    map_grid = settings["map_grid"]
 
 
 # Initialise globals from defaults so module is usable without calling main()
@@ -316,6 +318,8 @@ def parse_folder_name(model_path):
 
 def get_model_dict_paths(physical_model, prefix):
     model_root = MESA_DATA_DIR / physical_model
+    if map_grid:
+        model_root = model_root / "map"
     model_folders = model_root.glob(f"{prefix}*_ZdivZsun_*")
     model_dict_paths = {}
     for model_folder in model_folders:
@@ -680,6 +684,8 @@ def read_system(model_path, z_key):
         cols[CORE_PROPS_HEADER.index("m_zams")] = m_zams
         cols[CORE_PROPS_HEADER.index("p_spin_zams")] = p_spin_zams
         cols[CORE_PROPS_HEADER.index("p_orb_zams")] = p_spin_zams
+        if map_grid and h is not None:
+            cols[CORE_PROPS_HEADER.index("m_f")] = h.star_mass[-1]
     else:
         logs = mr.MesaLogDir(str(model_path / "LOGS"))
         prof_model_numbers = logs.model_numbers
@@ -1187,6 +1193,11 @@ def main():
         help="Folder containing metallicity folders for same physics",
     )
     parser.add_argument(
+        "--map-grid",
+        action="store_true",
+        help="Whether to try load a map grid from a map/ subdirectory",
+    )
+    parser.add_argument(
         "--model-prefix",
         "-p",
         type=str,
@@ -1239,6 +1250,8 @@ def main():
         settings["n_processes"] = args.n_cores
     if args.output_title is not None:
         settings["core_props_title"] = args.output_title
+    if args.map_grid is not None:
+        settings["map_grid"] = args.map_grid
 
     _apply_settings(settings)
 
