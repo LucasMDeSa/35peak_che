@@ -962,6 +962,8 @@ class PMZLinearInterpolator:
         verbose=False,
         cut_non_he_depl=False,
         extrapolate_z_islands=False,
+        interpolate_diagonals=False,
+        map_core_props_df=None,
     ):
         self.core_props_df = core_props_df
         self.var = var
@@ -970,8 +972,16 @@ class PMZLinearInterpolator:
         self.verbose = verbose
         self.cut_non_he_depl = cut_non_he_depl
         self.extrapolate_z_islands = extrapolate_z_islands
+        self.interpolate_diagonals = interpolate_diagonals
+        self.map_core_props_df = map_core_props_df
         self.p_interpolators = self._get_p_interpolators()
         self._check_training_topology()
+        if self.interpolate_diagonals:
+            if self.map_core_props_df is None:
+                raise ValueError(
+                    "interpolate_diagonals=True requires map_core_props_df"
+                )
+            self._fill_diagonals()
 
     def _get_p_interpolators(self):
         """Sets p interpolators for all m_zams and z_key combinations."""
@@ -1085,6 +1095,127 @@ class PMZLinearInterpolator:
                 UserWarning,
                 stacklevel=4,
             )
+
+    def _fill_diagonals(self):
+        """Fill staircase gaps by interpolating along 45-deg diagonals in (M,P) index space.
+
+        Uses the map grid's CHE window to decide which nodes are valid fill
+        targets, and the already-built axis-aligned interpolators as anchors.
+        Only writes to nodes the original interpolators left as NaN.
+        """
+        map_che = self.map_core_props_df[
+            self.map_core_props_df.is_che
+            & ~self.map_core_props_df.is_merger_at_zams
+        ]
+
+        for z_key in list(self.p_interpolators.keys()):
+            z_che = map_che[map_che.z_key == z_key]
+            if z_che.empty:
+                continue
+
+            m_ax = np.array(sorted(z_che.m_zams.unique()))
+            p_ax = np.array(sorted(z_che.p_spin_zams.round(4).unique()))
+            n_m, n_p = len(m_ax), len(p_ax)
+            m_idx = {v: i for i, v in enumerate(m_ax)}
+            p_idx = {round(v, 4): i for i, v in enumerate(p_ax)}
+
+            # CHE window mask from map
+            che_mask = np.zeros((n_m, n_p), dtype=bool)
+            for _, row in z_che.iterrows():
+                im = m_idx.get(row.m_zams)
+                ip = p_idx.get(round(row.p_spin_zams, 4))
+                if im is not None and ip is not None:
+                    che_mask[im, ip] = True
+
+            # Evaluate original interpolator on the map grid
+            values = np.full((n_m, n_p), np.nan)
+            for ip_i, p in enumerate(p_ax):
+                m_ip = self._get_m_interpolator(p, z_key)
+                for im_i, m in enumerate(m_ax):
+                    if che_mask[im_i, ip_i]:
+                        val = float(m_ip(m))
+                        if not np.isnan(val):
+                            values[im_i, ip_i] = val
+
+            filled = ~np.isnan(values)
+            n_filled_before = filled.sum()
+
+            # Walk 45-deg diagonals (constant d = im - ip, increasing both)
+            for d in range(-(n_p - 1), n_m):
+                diag = []
+                for k in range(max(n_m, n_p)):
+                    im, ip = d + k, k
+                    if 0 <= im < n_m and 0 <= ip < n_p:
+                        diag.append((im, ip))
+                if len(diag) < 2:
+                    continue
+
+                anchors = [
+                    (step, im, ip)
+                    for step, (im, ip) in enumerate(diag)
+                    if filled[im, ip]
+                ]
+                if len(anchors) < 2:
+                    continue
+
+                for (s1, im1, ip1), (s2, im2, ip2) in zip(anchors, anchors[1:]):
+                    v1 = values[im1, ip1]
+                    v2 = values[im2, ip2]
+                    span = s2 - s1
+                    for s in range(s1 + 1, s2):
+                        im, ip = diag[s]
+                        if che_mask[im, ip] and not filled[im, ip]:
+                            t = (s - s1) / span
+                            values[im, ip] = v1 + t * (v2 - v1)
+                            filled[im, ip] = True
+
+            n_filled_after = filled.sum()
+            if self.verbose and n_filled_after > n_filled_before:
+                print(
+                    f"[PMZLinearInterpolator var={self.var}] z={z_key}: "
+                    f"diagonal fill added {n_filled_after - n_filled_before} "
+                    f"nodes ({n_filled_before} -> {n_filled_after})"
+                )
+
+            # Rebuild period interpolators for masses that gained new data
+            for im_i, m in enumerate(m_ax):
+                row_vals = values[im_i]
+                new_mask = ~np.isnan(row_vals)
+                if not new_mask.any():
+                    continue
+
+                new_p = p_ax[new_mask]
+                new_v = row_vals[new_mask]
+
+                existing = self.p_interpolators[z_key].get(m)
+                if existing is not None and not np.isnan(existing.x[0]):
+                    orig_p = existing.x
+                    orig_v = existing.y
+                    all_p = np.concatenate([orig_p, new_p])
+                    all_v = np.concatenate([orig_v, new_v])
+                    _, uniq = np.unique(np.round(all_p, 4), return_index=True)
+                    all_p = all_p[uniq]
+                    all_v = all_v[uniq]
+                else:
+                    all_p = new_p
+                    all_v = new_v
+
+                order = all_p.argsort()
+                all_p = all_p[order]
+                all_v = all_v[order]
+
+                if len(all_p) >= 2:
+                    self.p_interpolators[z_key][m] = interp1d(
+                        all_p, all_v,
+                        bounds_error=self.bounds_error,
+                        fill_value=self.fill_value,
+                    )
+                elif len(all_p) == 1:
+                    self.p_interpolators[z_key][m] = interp1d(
+                        all_p, all_v,
+                        bounds_error=False,
+                        fill_value=self.fill_value,
+                    )
 
     def _get_p_interpolator(self, m_key, z_key):
         ip_data = self.core_props_df.copy()
@@ -2466,6 +2597,8 @@ class FinalVarModel:
         fallback_to_interpolator_for_logtd=False,
         dense_core_props_df=None,
         correction_factors=("mi",),
+        interpolate_diagonals=False,
+        map_core_props_df=None,
     ):
         self.core_props_df = core_props_df
         self.var = var
@@ -2484,6 +2617,8 @@ class FinalVarModel:
         self.fallback_to_interpolator_for_logtd = fallback_to_interpolator_for_logtd
         self.dense_core_props_df = dense_core_props_df
         self.correction_factors = list(correction_factors)
+        self.interpolate_diagonals = interpolate_diagonals
+        self.map_core_props_df = map_core_props_df
 
         if self.model not in ["interpolator", "analytical", "corrected"]:
             raise ValueError(
@@ -2536,6 +2671,8 @@ class FinalVarModel:
                 **self.DEFAULT_LINEARINTERPOLATOR_KWARGS,
                 cut_non_he_depl=self.cut_non_he_depl,
                 extrapolate_z_islands=self.extrapolate_z_islands,
+                interpolate_diagonals=self.interpolate_diagonals,
+                map_core_props_df=self.map_core_props_df,
             )
             self._vec_get_var = np.vectorize(self.lip.get_var)
             self.model_to_use = "interpolator"
