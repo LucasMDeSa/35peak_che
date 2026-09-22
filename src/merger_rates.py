@@ -780,16 +780,51 @@ def build_population_arrays(
     Column order in output arrays:
     [z_div_zsun, m_zams, p_spin_zams, mass, p_orb_f, spin, sync_spin, log_t_d]
     """
+
+    placeholder_col = np.zeros(len(sample_df), dtype=float)
+
     full_array = np.column_stack(
         [
-            sample_df[z_column].values,
-            sample_df[m_zams_column].values,
-            sample_df[p_spin_zams_column].values,
-            sample_df[mass_column].values,
-            sample_df[p_orb_column].values,
-            sample_df[spin_column].values,
-            sample_df[sync_spin_column].values,
-            sample_df[delay_column].values,
+            (
+                sample_df[z_column].values
+                if z_column in sample_df.columns
+                else placeholder_col
+            ),
+            (
+                sample_df[m_zams_column].values
+                if m_zams_column in sample_df.columns
+                else placeholder_col
+            ),
+            (
+                sample_df[p_spin_zams_column].values
+                if p_spin_zams_column in sample_df.columns
+                else placeholder_col
+            ),
+            (
+                sample_df[mass_column].values
+                if mass_column in sample_df.columns
+                else placeholder_col
+            ),
+            (
+                sample_df[p_orb_column].values
+                if p_orb_column in sample_df.columns
+                else placeholder_col
+            ),
+            (
+                sample_df[spin_column].values
+                if spin_column in sample_df.columns
+                else placeholder_col
+            ),
+            (
+                sample_df[sync_spin_column].values
+                if sync_spin_column in sample_df.columns
+                else placeholder_col
+            ),
+            (
+                sample_df[delay_column].values
+                if delay_column in sample_df.columns
+                else placeholder_col
+            ),
         ]
     )
 
