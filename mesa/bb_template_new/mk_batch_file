@@ -1,0 +1,29 @@
+#!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/lib/common.sh"
+
+full_batch_file="run_grid"
+: > "$full_batch_file"
+
+for metallicity_folder in ./*_ZdivZsun_*; do
+    [ -d "$metallicity_folder" ] || continue
+
+    # Skip ignored Z values
+    z_suffix=$(echo "$metallicity_folder" | sed -E 's|.*/[0-9]+_ZdivZsun_||')
+    z_div_zsun=$(echo "$z_suffix" | sed 's/d/e/')
+    if is_z_ignored "$z_div_zsun"; then
+        continue
+    fi
+
+    for mass_folder in "$metallicity_folder"/[0-9][0-9][0-9]_m*; do
+        [ -d "$mass_folder" ] || continue
+        for period_folder in "$mass_folder"/m*_p*_w*; do
+            [ -d "$period_folder" ] || continue
+            echo "(cd $period_folder ; ./rn) &> $period_folder.log" >> "$full_batch_file"
+        done
+    done
+done
+
+echo "Generated $full_batch_file with $(wc -l < "$full_batch_file") entries."

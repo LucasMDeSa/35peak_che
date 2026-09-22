@@ -1,0 +1,223 @@
+#!/bin/bash
+# ==============================================================================
+# permissions_tracker
+# ==============================================================================
+# Soft-lock grid directories during partial reruns to prevent accidental
+# modification of models that should not be touched.
+#
+#   ./permissions_tracker freeze <allowlist_file>
+#   ./permissions_tracker unfreeze
+#   ./permissions_tracker status
+#
+# The allowlist is a plain-text file with one L3 model path per line — the
+# only L3 dirs that should remain writable. Every other L3 model dir in the
+# grid, plus ALL L1 template and L2 MESA_input_src inlist_both files, has its
+# write bits dropped via chmod a-w. State (every path touched, plus sha256
+# checksums) is recorded in permissions_tracker.state so unfreeze can reverse
+# exactly what freeze did.
+# ==============================================================================
+
+set -euo pipefail
+
+STATE="permissions_tracker.state"
+STATE_SHA="${STATE}.sha256"
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+cmd_freeze() {
+    local allowlist="${1:-}"
+    [ -n "$allowlist" ] || die "Usage: $0 freeze <allowlist_file>"
+    [ -f "$allowlist" ] || die "allowlist file not found: $allowlist"
+    [ ! -e "$STATE" ] || die "$STATE already exists. Run unfreeze first or rm $STATE manually."
+
+    local allow_sorted
+    allow_sorted=$(mktemp)
+    sed -E 's|/+$||' "$allowlist" | grep -vE '^[[:space:]]*$' | sort -u > "$allow_sorted"
+    local n_allow
+    n_allow=$(wc -l < "$allow_sorted")
+    echo "Allowlist: $n_allow L3 paths."
+
+    local all_l3
+    all_l3=$(mktemp)
+    find [0-9][0-9][0-9][0-9]_ZdivZsun_*/ -mindepth 2 -maxdepth 2 -type d -name 'm*_p*_w*' \
+        2>/dev/null | sort -u > "$all_l3"
+    local n_all
+    n_all=$(wc -l < "$all_l3")
+    echo "Total L3 dirs in grid: $n_all"
+
+    local missing
+    missing=$(comm -23 "$allow_sorted" "$all_l3" || true)
+    if [ -n "$missing" ]; then
+        echo "ERROR: allowlist contains paths not present as L3 dirs:" >&2
+        echo "$missing" >&2
+        rm -f "$allow_sorted" "$all_l3"
+        exit 1
+    fi
+
+    local frozen
+    frozen=$(mktemp)
+    comm -23 "$all_l3" "$allow_sorted" > "$frozen"
+    local n_freeze
+    n_freeze=$(wc -l < "$frozen")
+    echo "Will freeze $n_freeze L3 dirs (= $n_all - $n_allow)."
+
+    local allow_sha
+    allow_sha=$(sha256sum "$allowlist" | cut -d' ' -f1)
+    {
+        echo "# permissions_tracker state — DO NOT EDIT BY HAND"
+        echo "# created: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        echo "# host: $(hostname)"
+        echo "# allowlist_path: $allowlist"
+        echo "# allowlist_sha256: $allow_sha"
+        echo "# allowlist_count: $n_allow"
+    } > "$STATE"
+
+    echo "Freezing L3 dirs + their inlists + sibling .log..."
+    local count=0
+    while IFS= read -r l3; do
+        [ -d "$l3" ] || continue
+        chmod a-w "$l3"
+        echo "DIR $l3" >> "$STATE"
+        local f
+        for f in inlist inlist1 inlist_both inlist_pgstar; do
+            if [ -f "$l3/$f" ]; then
+                chmod a-w "$l3/$f"
+                echo "FIL $l3/$f" >> "$STATE"
+            fi
+        done
+        if [ -f "${l3}.log" ]; then
+            chmod a-w "${l3}.log"
+            echo "LOG ${l3}.log" >> "$STATE"
+        fi
+        count=$((count + 1))
+        if (( count % 1000 == 0 )); then
+            echo "  ... $count / $n_freeze"
+        fi
+    done < "$frozen"
+    echo "L3 dirs frozen: $count"
+
+    echo "Freezing inlist_both in ALL L1 templates and L2 MESA_input_src..."
+    local l1 l2
+    for l1 in $(find . -maxdepth 1 -type d -name '[0-9][0-9][0-9][0-9]_ZdivZsun_*' -printf '%f\n' | sort); do
+        if [ -f "$l1/template/MESA_input_src/inlist_both" ]; then
+            chmod a-w "$l1/template/MESA_input_src/inlist_both"
+            echo "FIL $l1/template/MESA_input_src/inlist_both" >> "$STATE"
+        fi
+        for l2 in "$l1"/[0-9][0-9][0-9]_m*/; do
+            l2="${l2%/}"
+            [ -d "$l2" ] || continue
+            if [ -f "$l2/MESA_input_src/inlist_both" ]; then
+                chmod a-w "$l2/MESA_input_src/inlist_both"
+                echo "FIL $l2/MESA_input_src/inlist_both" >> "$STATE"
+            fi
+        done
+    done
+
+    sha256sum "$STATE" > "$STATE_SHA"
+
+    rm -f "$allow_sorted" "$all_l3" "$frozen"
+
+    local n_dir n_fil n_log
+    n_dir=$(grep -c "^DIR " "$STATE" || true)
+    n_fil=$(grep -c "^FIL " "$STATE" || true)
+    n_log=$(grep -c "^LOG " "$STATE" || true)
+    echo
+    echo "Done. Frozen: $n_dir L3 dirs, $n_fil inlist files, $n_log .log files."
+    echo "State recorded at: $STATE  (sha256 -> $STATE_SHA)"
+}
+
+cmd_unfreeze() {
+    [ -f "$STATE" ] || die "no state file ($STATE) — nothing to unfreeze."
+    [ -f "$STATE_SHA" ] || die "state sha file missing ($STATE_SHA). Refusing to unfreeze."
+
+    local expected actual
+    expected=$(cut -d' ' -f1 < "$STATE_SHA")
+    actual=$(sha256sum "$STATE" | cut -d' ' -f1)
+    if [ "$expected" != "$actual" ]; then
+        die "$STATE sha mismatch (expected $expected, got $actual). State file edited or corrupted — refusing to unfreeze."
+    fi
+
+    echo "Restoring write permissions on frozen entries..."
+    local count=0
+    local kind path
+    while IFS=' ' read -r kind path; do
+        case "$kind" in
+            DIR)
+                [ -d "$path" ] && chmod u+w,g+w "$path"
+                ;;
+            FIL|LOG)
+                [ -f "$path" ] && chmod u+w,g+w "$path"
+                ;;
+            \#*|"") continue ;;
+            *) echo "  WARN: unknown kind '$kind' for path '$path'" >&2 ;;
+        esac
+        count=$((count + 1))
+    done < "$STATE"
+
+    local ts archive archive_sha
+    ts=$(date -u +%Y%m%dT%H%M%SZ)
+    archive="permissions_tracker.state.${ts}.done"
+    archive_sha="${archive}.sha256"
+    mv "$STATE" "$archive"
+    mv "$STATE_SHA" "$archive_sha"
+
+    echo "Done. Restored $count entries. Audit trail: $archive"
+}
+
+cmd_status() {
+    if [ ! -f "$STATE" ]; then
+        echo "Status: UNLOCKED"
+        local last
+        last=$(ls -1t permissions_tracker.state.*.done 2>/dev/null | head -1 || true)
+        [ -n "$last" ] && echo "Last completed freeze cycle: $last"
+        return 0
+    fi
+
+    local status="LOCKED"
+    if [ -f "$STATE_SHA" ]; then
+        local expected actual
+        expected=$(cut -d' ' -f1 < "$STATE_SHA")
+        actual=$(sha256sum "$STATE" | cut -d' ' -f1)
+        if [ "$expected" != "$actual" ]; then
+            status="LOCKED — STATE FILE TAMPERED WITH (sha mismatch)"
+        fi
+    else
+        status="LOCKED (no sha file present)"
+    fi
+    echo "Status: $status"
+
+    local meta_created meta_allow_path meta_allow_sha meta_allow_count
+    meta_created=$(grep -E "^# created:" "$STATE" | head -1 | awk '{print $NF}' || true)
+    meta_allow_path=$(grep -E "^# allowlist_path:" "$STATE" | head -1 | awk '{print $NF}' || true)
+    meta_allow_sha=$(grep -E "^# allowlist_sha256:" "$STATE" | head -1 | awk '{print $NF}' || true)
+    meta_allow_count=$(grep -E "^# allowlist_count:" "$STATE" | head -1 | awk '{print $NF}' || true)
+
+    local n_dir n_fil n_log
+    n_dir=$(grep -c "^DIR " "$STATE" || true)
+    n_fil=$(grep -c "^FIL " "$STATE" || true)
+    n_log=$(grep -c "^LOG " "$STATE" || true)
+
+    echo "  Created         : $meta_created"
+    echo "  Allowlist       : $meta_allow_path"
+    echo "  Allowlist sha   : $meta_allow_sha"
+    echo "  Allowlist count : $meta_allow_count"
+    echo "  Frozen L3 dirs  : $n_dir"
+    echo "  Frozen files    : $n_fil"
+    echo "  Frozen .log     : $n_log"
+}
+
+case "${1:-}" in
+    freeze)   shift; cmd_freeze "${1:-}" ;;
+    unfreeze) cmd_unfreeze ;;
+    status)   cmd_status ;;
+    "")
+        cat <<EOF
+Usage:
+  $0 freeze <allowlist_file>   # chmod a-w on everything outside the allowlist
+  $0 unfreeze                  # restore write perms, archive the state file
+  $0 status                    # report current lock state
+EOF
+        exit 1
+        ;;
+    *) die "unknown subcommand: $1" ;;
+esac

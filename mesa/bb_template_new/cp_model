@@ -1,0 +1,28 @@
+#!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/lib/common.sh"
+
+source_folder="$1"
+destination_folder="$2"
+
+mkdir -p "$destination_folder"
+cp "$source_folder/README" "$destination_folder/" 2>/dev/null || true
+cp "$source_folder/clean" "$destination_folder/"
+cp "$source_folder/cp_model" "$destination_folder/"
+cp "$source_folder/mass_grid" "$destination_folder/"
+cp "$source_folder/mk_grid" "$destination_folder/"
+cp "$source_folder/period_grid" "$destination_folder/"
+copy_without_build "$source_folder/template" "$destination_folder/"
+
+chmod +x "$destination_folder/clean" \
+         "$destination_folder/cp_model" \
+         "$destination_folder/mk_grid" \
+         "$destination_folder/template/gen_grid_file" \
+         "$destination_folder/template/mk_mesa_inputs" \
+         "$destination_folder/template/clean" \
+         "$destination_folder/template/MESA_input_src/clean" \
+         "$destination_folder/template/MESA_input_src/mk" \
+         "$destination_folder/template/MESA_input_src/rn" \
+         "$destination_folder/template/MESA_input_src/re" 2>/dev/null || true

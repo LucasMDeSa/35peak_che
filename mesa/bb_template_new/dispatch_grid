@@ -1,0 +1,109 @@
+#!/bin/bash
+# Unified Slurm array-job dispatcher. Replaces all disBatch scripts.
+# Generates and submits Slurm array jobs from a run list file.
+# Auto-splits into 1000-task chunks when the list exceeds MaxArraySize.
+#
+# Usage:
+#   ./dispatch_grid [run_list_file]              # default: run_grid
+#   ./dispatch_grid --dry-run [run_list_file]    # generate scripts without submitting
+#
+# Script/job/log names are tagged by the run list: run_grid -> grid,
+# run_missing_grid -> missing_grid (submit_<tag>[_partN].slurm, job <tag>[_partN]).
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/lib/common.sh"
+load_grid_conf
+
+DRY_RUN=false
+RUN_LIST=""
+
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run)    DRY_RUN=true ;;
+        -*)           echo "Unknown flag: $arg" >&2; exit 1 ;;
+        *)            RUN_LIST="$arg" ;;
+    esac
+done
+
+RUN_LIST="${RUN_LIST:-run_grid}"
+[ -f "$RUN_LIST" ] || { echo "ERROR: $RUN_LIST not found. Run ./mk_batch_file or ./mk_grid first." >&2; exit 1; }
+
+N_TASKS=$(grep -cvE '^[[:space:]]*(#|$)' "$RUN_LIST")
+[ "$N_TASKS" -gt 0 ] || { echo "ERROR: $RUN_LIST has no runnable entries." >&2; exit 1; }
+
+echo "Found $N_TASKS tasks in $RUN_LIST."
+
+TAG=$(basename "$RUN_LIST")
+TAG="${TAG#run_}"
+
+CONCURRENCY="${ARRAY_CONCURRENCY}"
+WALLTIME="${ARRAY_WALLTIME}"
+PARTITION="${SLURM_PARTITION_SINGLE}"
+EMAIL="${GRID_EMAIL}"
+CPUS="${CPUS_PER_TASK}"
+MAX_TASKS="${MAX_ARRAY_TASKS}"
+
+mkdir -p logs
+
+submit_array_job() {
+    local list_file="$1"
+    local n="$2"
+    local suffix="${3:-}"
+    local script_name="submit_${TAG}${suffix}.slurm"
+    local job_name="${TAG}${suffix}"
+
+    cat > "$script_name" <<EOF
+#!/bin/bash
+#SBATCH --job-name=${job_name}
+#SBATCH --array=1-${n}%${CONCURRENCY}
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=${CPUS}
+#SBATCH --partition=${PARTITION}
+#SBATCH --time=${WALLTIME}
+#SBATCH --output=logs/${TAG}${suffix}_%A_%a.out
+#SBATCH --error=logs/${TAG}${suffix}_%A_%a.err
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=${EMAIL}
+
+$(activate_mesa_snippet)
+export OMP_NUM_THREADS=${CPUS}
+
+# Slurm runs this script from its spool dir; run_grid paths are relative
+# to the physics-set root, so always start from the submit dir.
+cd "\${SLURM_SUBMIT_DIR}"
+
+cmd=\$(sed -n "\${SLURM_ARRAY_TASK_ID}p" "${list_file}")
+if [ -z "\$cmd" ]; then
+    echo "No entry for array task \${SLURM_ARRAY_TASK_ID} in ${list_file}" >&2
+    exit 1
+fi
+
+bash -c "\$cmd"
+EOF
+    chmod +x "$script_name"
+    echo "Generated $script_name (N=$n, concurrency=$CONCURRENCY)"
+
+    if ! $DRY_RUN; then
+        sbatch "$script_name"
+    fi
+}
+
+if [ "$N_TASKS" -le "$MAX_TASKS" ]; then
+    submit_array_job "$RUN_LIST" "$N_TASKS"
+else
+    rm -f "${RUN_LIST}_part"[0-9]*
+    split -l "$MAX_TASKS" -d -a 1 --additional-suffix="" "$RUN_LIST" "${RUN_LIST}_part"
+    echo "Split into $(ls -1 "${RUN_LIST}_part"[0-9]* | wc -l) parts (max $MAX_TASKS tasks each)."
+    for part_file in "${RUN_LIST}_part"[0-9]*; do
+        part_suffix="_$(basename "$part_file" | sed "s/$(basename "$RUN_LIST")_//")"
+        n_part=$(grep -cvE '^[[:space:]]*(#|$)' "$part_file")
+        submit_array_job "$part_file" "$n_part" "$part_suffix"
+    done
+fi
+
+if $DRY_RUN; then
+    echo "(dry run — scripts generated but not submitted)"
+fi

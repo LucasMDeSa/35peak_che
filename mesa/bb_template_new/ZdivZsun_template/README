@@ -1,0 +1,44 @@
+# ZdivZsun_template — L1 (metallicity) template
+#
+# This folder is the template for each metallicity level of the grid.
+# mk_grid at the parent level copies this entire folder for each Z value
+# in z_div_zsun_grid, then patches the Z in template/MESA_input_src/inlist_both.
+#
+# After mk_grid creates the L1 folder, run ./mk_grid inside it to generate
+# the mass x period subgrid:
+#   cd 0002_ZdivZsun_2d-02
+#   ./mk_grid
+#
+# This creates one L2 folder per mass in mass_grid, each containing
+# L3 model folders for every period in period_grid.
+#
+# Scripts:
+#   mk_grid        — Generate L2 mass folders + L3 period/omega models
+#   cp_model        — Copy the L2 template to a new mass folder
+#   clean           — Remove all generated L2 folders and artifacts
+#
+# Grid spec files:
+#   mass_grid       — ZAMS masses in Msun (one per line)
+#   period_grid     — ZAMS spin periods in days (one per line)
+#
+# Sparse grid overrides (written by select_sparse_grid into L1 dirs):
+#   mass_grid             — Per-L1 mass subset (overrides this template's mass_grid)
+#   period_grid.{mass}    — Per-mass period subset (e.g. period_grid.20, period_grid.300)
+#   period_grid           — Per-L1 fallback period grid (used when no per-mass file exists)
+#
+# When present in an L1 folder, mk_grid and mk_missing_grid use these
+# overrides instead of the template defaults.
+#
+# How sparse overrides work with mk_grid:
+#
+#   1. If an L1 folder contains its own mass_grid, mk_grid uses it instead
+#      of the template's mass_grid.
+#   2. For each mass, mk_grid checks for period_grid.{mass} (e.g.
+#      period_grid.20, period_grid.300). If found, only those periods are
+#      created; otherwise the L1's period_grid (or template default) is used.
+#   3. This means a sparse L1 folder gets a different (M, P) grid than
+#      the dense template — no manual editing needed.
+#
+# To inspect what a sparse grid will produce without writing files
+# (pyenv activate cher; use --input-grid-type map --h5 <map HDF5> for a map grid):
+#   cd ..; ./select_sparse_grid.py --input-grid-type complete --fraction 0.3 --dry-run --verbose

@@ -1,0 +1,29 @@
+#!/bin/bash
+set -euo pipefail
+
+LOG_FILE="missing_models.log"
+RUN_FILE="run_missing_grid"
+SUBMIT_SCRIPT="submit_missing_single.slurm"
+
+if [ -f "$LOG_FILE" ]; then
+    echo "Reading $LOG_FILE to delete generated folders..."
+    grep "Creating missing" "$LOG_FILE" | awk '{print $NF}' | sort -r | while read -r target; do
+        echo "Removing generated path: $target"
+        rm -rf "$target"
+        rm -f "${target}.log"
+    done
+else
+    echo "Warning: $LOG_FILE not found (skipping folder deletion)."
+fi
+
+echo "Removing run files and logs..."
+rm -f "$RUN_FILE"
+rm -f "$LOG_FILE"
+rm -f "$SUBMIT_SCRIPT"
+
+echo "Removing slurm logs..."
+rm -f slurm_missing.out slurm_missing.err
+rm -f slurm_missing_*.out slurm_missing_*.err
+rm -f slurm-*.out
+
+echo "Cleanup complete."

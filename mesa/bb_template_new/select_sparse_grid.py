@@ -1,0 +1,1131 @@
+#!/usr/bin/env python3
+"""Select sparse subsets of a dense (M, P) grid per metallicity.
+
+Boundary = min/max period per mass; masses ranked by curvature |d²<m_f>/dM²|.
+Interior periods ranked by per-mass curvature |d²m_f/dP²|, budget per mass.
+Cross-axis budget transfer prevents period oversampling relative to mass.
+Output: per-L1 mass_grid and period_grid.{mass} override files for mk_grid.
+"""
+
+import argparse
+import os
+import re
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+DEFAULT_H5 = (
+    "/home/hd/hd_hd/hd_lt355/gpfs/hd_lt355-cher/repos/35peak_che/data/"
+    "00_fiducial_core_props_df_v7.h5"
+)
+
+
+# ---------------------------------------------------------------------------
+# Data loading
+# ---------------------------------------------------------------------------
+
+def load_fiducial_data(h5_path, grid_type="map"):
+    df = pd.read_hdf(h5_path, "core_props_df")
+    out = df[["z_key", "m_zams", "p_spin_zams", "m_f",
+              "is_che", "is_merger_at_zams", "case_code"]].copy()
+    if grid_type == "complete":
+        out["is_crash"] = out["case_code"].isin(["A4", "C"])
+    else:
+        out["is_crash"] = out["case_code"] == "C"
+    out.drop(columns=["case_code"], inplace=True)
+    return out
+
+
+def discover_l1_dirs():
+    """Find L1 directories, return list of (z_float, z_key, l1_path)."""
+    results = []
+    for d in sorted(Path(".").glob("[0-9][0-9][0-9][0-9]_ZdivZsun_*")):
+        if not d.is_dir():
+            continue
+        match = re.match(r"\d{4}_ZdivZsun_(.*)", d.name)
+        if not match:
+            continue
+        z_float = float(match.group(1).replace("d", "e"))
+        z_key = f"{z_float:.4f}"
+        results.append((z_float, z_key, str(d)))
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Grid construction, gap filling, interpolation
+# ---------------------------------------------------------------------------
+
+def build_grid_matrix(df_z, mass_axis, period_axis):
+    nm, npd = len(mass_axis), len(period_axis)
+    m_f_grid = np.full((nm, npd), np.nan)
+    che_mask = np.zeros((nm, npd), dtype=bool)
+    merger_mask = np.zeros((nm, npd), dtype=bool)
+    crash_mask = np.zeros((nm, npd), dtype=bool)
+    present_mask = np.zeros((nm, npd), dtype=bool)
+
+    midx = {m: i for i, m in enumerate(mass_axis)}
+    pidx = {p: j for j, p in enumerate(period_axis)}
+
+    for _, row in df_z.iterrows():
+        i, j = midx.get(row["m_zams"]), pidx.get(row["p_spin_zams"])
+        if i is None or j is None:
+            continue
+        present_mask[i, j] = True
+        che_mask[i, j] = bool(row["is_che"])
+        merger_mask[i, j] = bool(row["is_merger_at_zams"])
+        crash_mask[i, j] = bool(row["is_crash"])
+        if pd.notna(row["m_f"]):
+            m_f_grid[i, j] = row["m_f"]
+
+    return m_f_grid, che_mask, merger_mask, crash_mask, present_mask
+
+
+def fill_gaps(che_mask, merger_mask, crash_mask, present_mask, min_neighbors):
+    """Iterative gap filling. A non-domain point is filled if it has
+    >= min_neighbors filled neighbors (8-connected). Uniform threshold
+    for all rows. Returns (filled_domain, gap_set)."""
+    nm, npd = che_mask.shape
+    domain = che_mask & ~merger_mask
+    filled = domain.copy()
+    candidate = ~domain
+
+    gap_set = set()
+    changed = True
+    while changed:
+        changed = False
+        for i in range(nm):
+            for j in range(npd):
+                if not candidate[i, j] or filled[i, j]:
+                    continue
+                n_che = 0
+                for di in (-1, 0, 1):
+                    for dj in (-1, 0, 1):
+                        if di == 0 and dj == 0:
+                            continue
+                        ni, nj = i + di, j + dj
+                        if 0 <= ni < nm and 0 <= nj < npd and filled[ni, nj]:
+                            n_che += 1
+                if n_che >= min_neighbors:
+                    filled[i, j] = True
+                    gap_set.add((i, j))
+                    changed = True
+
+    return filled, gap_set
+
+
+def fill_mmax_gaps(filled_mask, min_neighbors):
+    """Fill M_max row with relaxed threshold (min_neighbors - 1).
+    Single pass, no iteration. Returns set of newly filled (i, j)."""
+    nm, npd = filled_mask.shape
+    gap_set = set()
+    i = nm - 1
+    for j in range(npd):
+        if filled_mask[i, j]:
+            continue
+        n_che = 0
+        for di in (-1, 0, 1):
+            for dj in (-1, 0, 1):
+                if di == 0 and dj == 0:
+                    continue
+                ni, nj = i + di, j + dj
+                if 0 <= ni < nm and 0 <= nj < npd and filled_mask[ni, nj]:
+                    n_che += 1
+        if n_che >= min_neighbors - 1:
+            filled_mask[i, j] = True
+            gap_set.add((i, j))
+    return gap_set
+
+
+def detect_monotonicity_gaps(m_f_grid, filled_mask, threshold=1.0):
+    """Mark points violating m_f monotonicity over M at fixed P.
+
+    For fixed period, m_f must increase with M. A bin is bad if the delta
+    to its offending neighbor exceeds `threshold` (Msun). Returns
+    (n_cleared, mono_set) where mono_set is the set of (i, j) cleared.
+    """
+    nm, npd = m_f_grid.shape
+    mono_set = set()
+    n_cleared = 0
+    changed = True
+    while changed:
+        changed = False
+        for j in range(npd):
+            valid = [(i, m_f_grid[i, j]) for i in range(nm)
+                     if filled_mask[i, j] and not np.isnan(m_f_grid[i, j])]
+            if len(valid) < 2:
+                continue
+            bad = set()
+            for idx in range(len(valid)):
+                i, mf = valid[idx]
+                if idx > 0:
+                    i_left, mf_left = valid[idx - 1]
+                    if mf_left - mf > threshold:
+                        bad.add(i)
+                if idx < len(valid) - 1:
+                    i_right, mf_right = valid[idx + 1]
+                    if mf - mf_right > threshold:
+                        bad.add(i)
+            for i in bad:
+                m_f_grid[i, j] = np.nan
+                mono_set.add((i, j))
+                n_cleared += 1
+                changed = True
+    return n_cleared, mono_set
+
+
+def interpolate_gap_mf(m_f_grid, filled_mask, mass_axis, period_axis):
+    """Fill m_f at domain points with NaN.
+
+    Priority: (1) linear interpolation over M at fixed P,
+    (2) linear interpolation over P at fixed M,
+    (3) copy from nearest cardinal neighbor along M or P.
+    """
+    nm, npd = m_f_grid.shape
+    original_valid = ~np.isnan(m_f_grid) & filled_mask
+    n_filled = 0
+    for i in range(nm):
+        for j in range(npd):
+            if not filled_mask[i, j] or not np.isnan(m_f_grid[i, j]):
+                continue
+
+            left_i = right_i = None
+            for k in range(i - 1, -1, -1):
+                if original_valid[k, j]:
+                    left_i = k
+                    break
+            for k in range(i + 1, nm):
+                if original_valid[k, j]:
+                    right_i = k
+                    break
+            if left_i is not None and right_i is not None:
+                t = ((mass_axis[i] - mass_axis[left_i]) /
+                     (mass_axis[right_i] - mass_axis[left_i]))
+                m_f_grid[i, j] = ((1 - t) * m_f_grid[left_i, j] +
+                                  t * m_f_grid[right_i, j])
+                n_filled += 1
+                continue
+
+            below_j = above_j = None
+            for k in range(j - 1, -1, -1):
+                if original_valid[i, k]:
+                    below_j = k
+                    break
+            for k in range(j + 1, npd):
+                if original_valid[i, k]:
+                    above_j = k
+                    break
+            if below_j is not None and above_j is not None:
+                t = ((period_axis[j] - period_axis[below_j]) /
+                     (period_axis[above_j] - period_axis[below_j]))
+                m_f_grid[i, j] = ((1 - t) * m_f_grid[i, below_j] +
+                                  t * m_f_grid[i, above_j])
+                n_filled += 1
+                continue
+
+            candidates = []
+            for k_i in (left_i, right_i):
+                if k_i is not None:
+                    candidates.append((abs(mass_axis[k_i] - mass_axis[i]) /
+                                       (mass_axis[-1] - mass_axis[0]),
+                                       m_f_grid[k_i, j]))
+            for k_j in (below_j, above_j):
+                if k_j is not None:
+                    candidates.append((abs(period_axis[k_j] - period_axis[j]) /
+                                       (period_axis[-1] - period_axis[0]),
+                                       m_f_grid[i, k_j]))
+            if candidates:
+                candidates.sort()
+                m_f_grid[i, j] = candidates[0][1]
+                n_filled += 1
+    return n_filled
+
+
+# ---------------------------------------------------------------------------
+# Curvature-based weights
+# ---------------------------------------------------------------------------
+
+def compute_boundary_weights(m_f_grid, filled_mask, mass_axis):
+    """Weight for mass selection: normalized |d²<m_f>_P/dM²| per mass slice.
+
+    Period-averaged m_f computed over all domain points at each mass.
+    Curvature normalized by ΔM²/Δ<m_f> to be dimensionless.
+    Returns (weights, mean_mf) arrays indexed by mass index.
+    Endpoints have NaN weight (always included in mass selection).
+    """
+    nm = len(mass_axis)
+    mean_mf = np.full(nm, np.nan)
+    for i in range(nm):
+        valid_j = filled_mask[i] & ~np.isnan(m_f_grid[i])
+        vals = m_f_grid[i, valid_j]
+        if len(vals) > 0:
+            mean_mf[i] = vals.mean()
+
+    valid_mean = mean_mf[~np.isnan(mean_mf)]
+    if len(valid_mean) < 2:
+        return np.full(nm, np.nan), mean_mf
+    delta_M = mass_axis[-1] - mass_axis[0]
+    delta_mf = valid_mean.max() - valid_mean.min()
+    if delta_mf == 0 or delta_M == 0:
+        return np.full(nm, np.nan), mean_mf
+
+    weights = np.full(nm, np.nan)
+    for i in range(1, nm - 1):
+        if np.isnan(mean_mf[i-1]) or np.isnan(mean_mf[i]) or np.isnan(mean_mf[i+1]):
+            continue
+        h = (mass_axis[i+1] - mass_axis[i-1]) / 2.0
+        raw_curv = abs(mean_mf[i+1] - 2*mean_mf[i] + mean_mf[i-1]) / h**2
+        weights[i] = raw_curv * delta_M**2 / delta_mf
+    return weights, mean_mf
+
+
+def compute_period_weights(m_f_grid, filled_mask, mass_axis, period_axis):
+    """Weight for period selection: per-mass normalized |d²m_f/dP²|.
+
+    For each mass, curvature of m_f(P) normalized by ΔP²/Δm_f for that mass.
+    Returns (weights_2d, period_mean_mf) where weights_2d is (nm, npd)
+    and period_mean_mf is 1D mass-averaged m_f per period (for plots).
+    """
+    nm, npd = len(mass_axis), len(period_axis)
+    weights = np.full((nm, npd), np.nan)
+
+    for i in range(nm):
+        js = sorted(j for j in range(npd)
+                    if filled_mask[i, j] and not np.isnan(m_f_grid[i, j]))
+        if len(js) < 3:
+            continue
+        j_min, j_max = js[0], js[-1]
+        mf_vals = [m_f_grid[i, j] for j in js]
+        delta_mf = max(mf_vals) - min(mf_vals)
+        delta_P = period_axis[j_max] - period_axis[j_min]
+        if delta_mf == 0 or delta_P == 0:
+            continue
+        js_set = set(js)
+        for idx in range(1, len(js) - 1):
+            j = js[idx]
+            j_prev, j_next = js[idx - 1], js[idx + 1]
+            h = (period_axis[j_next] - period_axis[j_prev]) / 2.0
+            raw_curv = abs(m_f_grid[i, j_next] - 2*m_f_grid[i, j]
+                          + m_f_grid[i, j_prev]) / h**2
+            weights[i, j] = raw_curv * delta_P**2 / delta_mf
+
+    period_mean_mf = np.full(npd, np.nan)
+    for j in range(npd):
+        vals = m_f_grid[filled_mask[:, j] & ~np.isnan(m_f_grid[:, j]), j]
+        if len(vals) > 0:
+            period_mean_mf[j] = vals.mean()
+    return weights, period_mean_mf
+
+
+# ---------------------------------------------------------------------------
+# Point selection
+# ---------------------------------------------------------------------------
+
+def enforce_period_overlap(selected_masses, boundary_masses_set, mass_domain_js,
+                           mass_weights, mass_axis, period_axis,
+                           boundary, selected):
+    """Ensure every adjacent pair of selected masses has overlapping period
+    ranges.  When two neighbors A, C have disjoint ranges, insert the
+    highest-curvature mass B between them that restores overlap on both sides.
+    Mutates selected_masses, boundary, and selected in place.
+    Returns the number of masses added."""
+    n_added = 0
+    warned = set()
+    changed = True
+    while changed:
+        changed = False
+        ordered = sorted(selected_masses)
+        for idx in range(len(ordered) - 1):
+            i_a, i_c = ordered[idx], ordered[idx + 1]
+            js_a, js_c = mass_domain_js[i_a], mass_domain_js[i_c]
+            p_min_a, p_max_a = period_axis[min(js_a)], period_axis[max(js_a)]
+            p_min_c, p_max_c = period_axis[min(js_c)], period_axis[max(js_c)]
+            if max(p_min_a, p_min_c) <= min(p_max_a, p_max_c):
+                continue
+
+            candidates = []
+            for i_b in boundary_masses_set:
+                if i_b <= i_a or i_b >= i_c or i_b in selected_masses:
+                    continue
+                js_b = mass_domain_js[i_b]
+                p_min_b = period_axis[min(js_b)]
+                p_max_b = period_axis[max(js_b)]
+                overlap_ab = max(p_min_a, p_min_b) <= min(p_max_a, p_max_b)
+                overlap_bc = max(p_min_b, p_min_c) <= min(p_max_b, p_max_c)
+                if overlap_ab and overlap_bc:
+                    candidates.append(i_b)
+
+            if not candidates:
+                mid = (i_a + i_c) / 2.0
+                fallback = []
+                for i_b in boundary_masses_set:
+                    if i_b <= i_a or i_b >= i_c or i_b in selected_masses:
+                        continue
+                    js_b = mass_domain_js[i_b]
+                    p_min_b = period_axis[min(js_b)]
+                    p_max_b = period_axis[max(js_b)]
+                    overlap_ab = max(p_min_a, p_min_b) <= min(p_max_a, p_max_b)
+                    if overlap_ab:
+                        fallback.append(i_b)
+                if fallback:
+                    fallback.sort(key=lambda i: (
+                        mass_weights[i] if not np.isnan(mass_weights[i])
+                        else -np.inf, -abs(i - mid)), reverse=True)
+                    best = fallback[0]
+                else:
+                    if (i_a, i_c) not in warned:
+                        print(f"  WARNING: no bridge mass between "
+                              f"M={mass_axis[i_a]:.0f} and "
+                              f"M={mass_axis[i_c]:.0f} "
+                              f"(period ranges disjoint, no candidate)")
+                        warned.add((i_a, i_c))
+                    continue
+            else:
+                mid = (i_a + i_c) / 2.0
+                candidates.sort(key=lambda i: (
+                    mass_weights[i] if not np.isnan(mass_weights[i])
+                    else -np.inf, -abs(i - mid)), reverse=True)
+                best = candidates[0]
+
+            selected_masses.add(best)
+            js_best = mass_domain_js[best]
+            j_min_b, j_max_b = min(js_best), max(js_best)
+            boundary.add((best, j_min_b))
+            selected.add((best, j_min_b))
+            if j_max_b != j_min_b:
+                boundary.add((best, j_max_b))
+                selected.add((best, j_max_b))
+            n_added += 1
+            changed = True
+            break
+    return n_added
+
+
+def select_points(filled_mask, m_f_grid, mass_axis, period_axis,
+                  mass_weights, period_weights, fraction_m, fraction_p):
+    """Two-pool selection: masses by curvature |d²<m_f>/dM²|, then
+    per-mass interior periods by |d²m_f/dP²|, with cross-axis transfer."""
+    nm, npd = filled_mask.shape
+
+    boundary = set()
+    boundary_masses = []
+    mass_domain_js = {}
+    for i in range(nm):
+        js = [j for j in range(npd) if filled_mask[i, j]]
+        if not js:
+            continue
+        mass_domain_js[i] = js
+        boundary_masses.append(i)
+        j_min, j_max = min(js), max(js)
+        boundary.add((i, j_min))
+        if j_max != j_min:
+            boundary.add((i, j_max))
+
+    boundary_masses_set = set(boundary_masses)
+    n_bnd_budget = max(2, int(round(fraction_m * len(boundary_masses))))
+    i_min_bnd = min(boundary_masses)
+    i_max_bnd = max(boundary_masses)
+
+    selected_masses = {i_min_bnd, i_max_bnd}
+    for i in boundary_masses:
+        if np.isnan(mass_weights[i]):
+            selected_masses.add(i)
+
+    ranked = [(i, mass_weights[i]) for i in boundary_masses
+              if i not in selected_masses and not np.isnan(mass_weights[i])]
+    ranked.sort(key=lambda x: x[1], reverse=True)
+    remaining = n_bnd_budget - len(selected_masses)
+    for i, _ in ranked[:max(0, remaining)]:
+        selected_masses.add(i)
+
+    selected = set()
+    n_boundary = 0
+    for i in selected_masses:
+        for ij in boundary:
+            if ij[0] == i:
+                selected.add(ij)
+                n_boundary += 1
+
+    n_overlap_enforced = enforce_period_overlap(
+        selected_masses, boundary_masses_set, mass_domain_js,
+        mass_weights, mass_axis, period_axis, boundary, selected)
+
+    n_interior = 0
+    for i in selected_masses:
+        js = mass_domain_js[i]
+        j_min, j_max = min(js), max(js)
+        interior_js = [j for j in js if j != j_min and j != j_max]
+        if not interior_js:
+            continue
+        n_int_budget = max(0, int(round(fraction_p * len(interior_js))))
+        scored = []
+        for j in interior_js:
+            w = period_weights[i, j]
+            scored.append((j, w if not np.isnan(w) else -1.0))
+        scored.sort(key=lambda x: x[1], reverse=True)
+        for j, _ in scored[:n_int_budget]:
+            selected.add((i, j))
+            n_interior += 1
+
+    # Cross-axis budget transfer: prevent period oversampling.
+    n_transfers = 0
+    while True:
+        sel_mass_curvs = [mass_weights[i] for i in selected_masses
+                          if not np.isnan(mass_weights[i])]
+        if not sel_mass_curvs:
+            break
+        threshold = min(sel_mass_curvs)
+
+        drop = set()
+        for (i, j) in selected:
+            if (i, j) in boundary:
+                continue
+            if np.isnan(period_weights[i, j]):
+                continue
+            if period_weights[i, j] < threshold:
+                drop.add((i, j))
+
+        if len(drop) <= 1:
+            break
+
+        selected -= drop
+        n_dropped = len(drop)
+
+        unselected_masses = [(i, mass_weights[i])
+                             for i in boundary_masses_set
+                             if i not in selected_masses
+                             and not np.isnan(mass_weights[i])]
+        if not unselected_masses:
+            candidates = []
+            for i_sel in selected_masses:
+                for j in mass_domain_js[i_sel]:
+                    if (i_sel, j) not in selected and (i_sel, j) not in boundary:
+                        w = period_weights[i_sel, j]
+                        if not np.isnan(w):
+                            candidates.append(((i_sel, j), w))
+            candidates.sort(key=lambda x: x[1], reverse=True)
+            for (ij, _) in candidates[:n_dropped]:
+                selected.add(ij)
+            break
+
+        unselected_masses.sort(key=lambda x: x[1], reverse=True)
+        new_i = unselected_masses[0][0]
+        selected_masses.add(new_i)
+
+        js_new = mass_domain_js[new_i]
+        j_min_new, j_max_new = min(js_new), max(js_new)
+        selected.add((new_i, j_min_new))
+        boundary.add((new_i, j_min_new))
+        if j_max_new != j_min_new:
+            selected.add((new_i, j_max_new))
+            boundary.add((new_i, j_max_new))
+
+        n_refill = n_dropped - 2
+        if n_refill > 0:
+            candidates = []
+            for i_sel in selected_masses:
+                for j in mass_domain_js[i_sel]:
+                    if (i_sel, j) not in selected and (i_sel, j) not in boundary:
+                        w = period_weights[i_sel, j]
+                        if not np.isnan(w):
+                            candidates.append(((i_sel, j), w))
+            candidates.sort(key=lambda x: x[1], reverse=True)
+            for (ij, _) in candidates[:n_refill]:
+                selected.add(ij)
+
+        n_transfers += 1
+
+    n_che = sum(1 for i in range(nm) for j in range(npd) if filled_mask[i, j])
+    n_boundary = sum(1 for ij in selected if ij in boundary)
+    n_interior = len(selected) - n_boundary
+    stats = dict(
+        n_che=n_che,
+        n_masses_total=len(boundary_masses),
+        n_masses_selected=len(selected_masses),
+        n_boundary=n_boundary,
+        n_interior=n_interior,
+        n_selected=len(selected),
+        n_gaps_selected=0,
+        n_mono_selected=0,
+        n_transfers=n_transfers,
+        n_overlap_enforced=n_overlap_enforced,
+    )
+    return selected, selected_masses, boundary, stats
+
+
+# ---------------------------------------------------------------------------
+# File output
+# ---------------------------------------------------------------------------
+
+def write_grid_files(l1_dir, mass_axis, period_axis, selected):
+    mass_periods = defaultdict(list)
+    for i, j in selected:
+        mass_periods[mass_axis[i]].append(period_axis[j])
+
+    masses = sorted(mass_periods)
+    for m in masses:
+        mass_periods[m].sort()
+
+    with open(os.path.join(l1_dir, "mass_grid"), "w") as f:
+        for m in masses:
+            f.write(f"{int(m)}\n")
+
+    for m in masses:
+        path = os.path.join(l1_dir, f"period_grid.{int(m)}")
+        with open(path, "w") as f:
+            for p in mass_periods[m]:
+                f.write(f"{p:.2f}\n")
+
+    return masses, mass_periods
+
+
+# ---------------------------------------------------------------------------
+# Plot helpers
+# ---------------------------------------------------------------------------
+
+def _che_extent(mass_axis, period_axis, filled_mask, margin=0.05):
+    """Axis limits fitted to CHE domain extent."""
+    che_i, che_j = np.where(filled_mask)
+    if len(che_i) == 0:
+        return None
+    m_lo, m_hi = mass_axis[che_i.min()], mass_axis[che_i.max()]
+    p_lo, p_hi = period_axis[che_j.min()], period_axis[che_j.max()]
+    dm = max(margin * (m_hi - m_lo), 5)
+    dp = max(margin * (p_hi - p_lo), 0.1)
+    return (m_lo - dm, m_hi + dm, p_lo - dp, p_hi + dp)
+
+
+def _set_che_lims(ax, extent):
+    if extent:
+        ax.set_xlim(extent[0], extent[1])
+        ax.set_ylim(extent[2], extent[3])
+
+
+def _setup_ax(ax):
+    ax.set_xlabel(r"$M/\mathrm{M}_\odot$")
+    ax.set_ylabel(r"$P/\mathrm{d}$")
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic plots
+# ---------------------------------------------------------------------------
+
+def plot_domain(ax, ma, pa, che, merger, crash, present,
+                gap_set, mono_set, filled):
+    """Plot 1: domain classification map — full grid range."""
+    nm, npd = che.shape
+    domain = che & ~merger
+
+    cats = {"Non-CHE": ([], "grey", ".", 15),
+            "Merger": ([], "red", "X", 30),
+            "CHE": ([], "#2ca02c", "s", 20),
+            "Gap (filled)": ([], "#1f77b4", "D", 25),
+            "Mono (replaced)": ([], "#9467bd", "v", 25),
+            "Gap (unfilled)": ([], "orange", "D", 20)}
+
+    for i in range(nm):
+        for j in range(npd):
+            pt = (ma[i], pa[j])
+            if (i, j) in gap_set:
+                cats["Gap (filled)"][0].append(pt)
+            elif (i, j) in mono_set:
+                cats["Mono (replaced)"][0].append(pt)
+            elif merger[i, j]:
+                cats["Merger"][0].append(pt)
+            elif domain[i, j]:
+                cats["CHE"][0].append(pt)
+            elif crash[i, j] or not present[i, j]:
+                cats["Gap (unfilled)"][0].append(pt)
+            else:
+                cats["Non-CHE"][0].append(pt)
+
+    for label, (pts, color, marker, sz) in cats.items():
+        if pts:
+            ms, ps = zip(*pts)
+            ax.scatter(ms, ps, c=color, marker=marker, s=sz, label=label,
+                       edgecolors="none", alpha=0.7)
+    ax.legend(fontsize=7, loc="upper right")
+    _setup_ax(ax)
+
+
+def plot_mf_surface(ax, ma, pa, m_f_grid, filled_mask, extent):
+    """Plot 2: final mass heatmap (M on x, P on y)."""
+    display = np.where(filled_mask, m_f_grid, np.nan)
+    im = ax.pcolormesh(ma, pa, display.T, shading="nearest", cmap="viridis")
+    ax.figure.colorbar(im, ax=ax, label=r"$m_f/\mathrm{M}_\odot$")
+    _setup_ax(ax)
+    _set_che_lims(ax, extent)
+
+
+def plot_selection_overlay(ax, ma, pa, filled_mask, selected,
+                           selected_masses, boundary,
+                           mass_weights, period_weights, extent):
+    """Plot 3: normalized weight heatmap with selection markers."""
+    nm, npd = filled_mask.shape
+
+    all_boundary = set()
+    for i in range(nm):
+        js = [j for j in range(npd) if filled_mask[i, j]]
+        if not js:
+            continue
+        j_min, j_max = min(js), max(js)
+        all_boundary.add((i, j_min))
+        if j_max != j_min:
+            all_boundary.add((i, j_max))
+
+    bnd_vals = [mass_weights[i] for i in set(i for i, _ in all_boundary)
+                if not np.isnan(mass_weights[i])]
+    if len(bnd_vals) >= 2:
+        bnd_lo, bnd_hi = min(bnd_vals), max(bnd_vals)
+        bnd_range = bnd_hi - bnd_lo if bnd_hi > bnd_lo else 1.0
+    else:
+        bnd_lo, bnd_range = 0.0, 1.0
+
+    int_vals = [period_weights[i, j]
+                for i in range(nm) for j in range(npd)
+                if filled_mask[i, j] and (i, j) not in all_boundary
+                and not np.isnan(period_weights[i, j])]
+    if len(int_vals) >= 2:
+        int_lo, int_hi = min(int_vals), max(int_vals)
+        int_range = int_hi - int_lo if int_hi > int_lo else 1.0
+    else:
+        int_lo, int_range = 0.0, 1.0
+
+    weight_grid = np.full((nm, npd), np.nan)
+    for i in range(nm):
+        for j in range(npd):
+            if not filled_mask[i, j]:
+                continue
+            if (i, j) in all_boundary:
+                w = mass_weights[i]
+                weight_grid[i, j] = 1.0 if np.isnan(w) \
+                    else (w - bnd_lo) / bnd_range
+            else:
+                w = period_weights[i, j]
+                weight_grid[i, j] = 0.0 if np.isnan(w) \
+                    else (w - int_lo) / int_range
+
+    im = ax.pcolormesh(ma, pa, weight_grid.T, shading="nearest",
+                       cmap="viridis", vmin=0, vmax=1)
+    ax.figure.colorbar(im, ax=ax, label="Normalized weight")
+
+    min_ps, max_ps, outline_ms = [], [], []
+    for i in range(nm):
+        js = [j for j in range(npd) if filled_mask[i, j]]
+        if not js:
+            continue
+        outline_ms.append(ma[i])
+        min_ps.append(pa[min(js)])
+        max_ps.append(pa[max(js)])
+    if outline_ms:
+        ax.plot(outline_ms, min_ps, "k", lw=1.0, zorder=2)
+        ax.plot(outline_ms, max_ps, "k", lw=1.0, zorder=2)
+        ax.plot([outline_ms[0], outline_ms[0]], [min_ps[0], max_ps[0]],
+                "k", lw=1.0, zorder=2)
+        ax.plot([outline_ms[-1], outline_ms[-1]], [min_ps[-1], max_ps[-1]],
+                "k", lw=1.0, zorder=2)
+
+    m_bnd_sel, p_bnd_sel = [], []
+    m_bnd_un, p_bnd_un = [], []
+    m_int_sel, p_int_sel = [], []
+    for i, j in all_boundary:
+        if (i, j) in selected:
+            m_bnd_sel.append(ma[i]); p_bnd_sel.append(pa[j])
+        else:
+            m_bnd_un.append(ma[i]); p_bnd_un.append(pa[j])
+    for i in range(nm):
+        for j in range(npd):
+            if filled_mask[i, j] and (i, j) not in all_boundary \
+                    and (i, j) in selected:
+                m_int_sel.append(ma[i]); p_int_sel.append(pa[j])
+
+    if m_bnd_sel:
+        ax.scatter(m_bnd_sel, p_bnd_sel, c="white", marker="o", s=40,
+                   edgecolors="k", linewidths=0.8, zorder=4,
+                   label="Boundary (selected)")
+    if m_bnd_un:
+        ax.scatter(m_bnd_un, p_bnd_un, facecolors="none", marker="o",
+                   s=30, edgecolors="k", linewidths=0.6, zorder=3,
+                   label="Boundary (unselected)")
+    if m_int_sel:
+        ax.scatter(m_int_sel, p_int_sel, c="white", marker="^", s=30,
+                   edgecolors="k", linewidths=0.6, zorder=4,
+                   label="Interior (selected)")
+    ax.plot([], [], c="k", lw=1.0, label="Domain outline")
+    ax.legend(fontsize=7, loc="upper left")
+    _setup_ax(ax)
+    _set_che_lims(ax, extent)
+
+
+def plot_boundary_weights(ax, ma, mass_weights, mass_mean_mf,
+                          selected_masses, boundary_masses):
+    """Plot 4: mass curvature — <m_f>_P and |d²<m_f>_P/dM²| vs M."""
+    valid = ~np.isnan(mass_mean_mf)
+    ax.plot(ma[valid], mass_mean_mf[valid], "k-o", ms=4, lw=1.2,
+            label=r"$\langle m_f \rangle_P$", zorder=2)
+
+    ax_b = ax.twinx()
+    bar_w = np.diff(ma).min() * 0.6
+    for i in boundary_masses:
+        w = mass_weights[i]
+        if np.isnan(w):
+            continue
+        color = "#2ca02c" if i in selected_masses else "lightgrey"
+        edge = "k" if i in selected_masses else "grey"
+        ax_b.bar(ma[i], w, width=bar_w, color=color, edgecolor=edge,
+                 linewidth=0.5, alpha=0.7, zorder=1)
+
+    for i in boundary_masses:
+        if np.isnan(mass_mean_mf[i]):
+            continue
+        if i in selected_masses:
+            ax.plot(ma[i], mass_mean_mf[i], "o", ms=8, c="#2ca02c",
+                    markeredgecolor="k", markeredgewidth=0.5, zorder=3)
+        else:
+            ax.plot(ma[i], mass_mean_mf[i], "o", ms=8, fillstyle="none",
+                    markeredgecolor="grey", markeredgewidth=0.8, zorder=3)
+
+    ax.set_xlabel(r"$M/\mathrm{M}_\odot$")
+    ax.set_ylabel(r"$\langle m_f \rangle_P/\mathrm{M}_\odot$")
+    ax_b.set_ylabel(r"$\tilde{\kappa}_M$ (normalized curvature)")
+    ax.plot([], [], "o", ms=8, c="#2ca02c", markeredgecolor="k",
+            label="Selected mass")
+    ax.plot([], [], "o", ms=8, fillstyle="none", markeredgecolor="grey",
+            label="Unselected mass")
+    ax.legend(fontsize=7, loc="center right")
+
+
+def plot_period_weights(ax, ma, pa, m_f_grid, filled_mask,
+                        period_weights, selected, boundary):
+    """Plot 5: per-mass m_f(P) curves with selection markers,
+    mean normalized curvature bars on twin axis."""
+    import matplotlib
+    from matplotlib.colors import Normalize
+    from matplotlib.cm import ScalarMappable
+
+    nm, npd = len(ma), len(pa)
+
+    mass_data = []
+    for i in range(nm):
+        js = sorted(j for j in range(npd)
+                    if filled_mask[i, j] and not np.isnan(m_f_grid[i, j]))
+        if len(js) < 2:
+            continue
+        mass_data.append((i, js))
+
+    if not mass_data:
+        return
+
+    ax_b = ax.twinx()
+    bar_w = np.diff(pa).min() * 0.6
+    for j in range(npd):
+        col_vals = period_weights[:, j]
+        valid = col_vals[~np.isnan(col_vals)]
+        if len(valid) == 0:
+            continue
+        w = valid.mean()
+        ax_b.bar(pa[j], w, width=bar_w, color="lightgrey", edgecolor="grey",
+                 linewidth=0.3, alpha=0.5, zorder=1)
+    ax_b.set_ylabel(r"$\langle\tilde{\kappa}_P\rangle_M$ (mean norm. curvature)")
+
+    mass_vals = [ma[i] for i, _ in mass_data]
+    norm = Normalize(vmin=min(mass_vals), vmax=max(mass_vals))
+    cmap = matplotlib.colormaps["viridis"]
+
+    for i, js in mass_data:
+        color = cmap(norm(ma[i]))
+        ps = [pa[j] for j in js]
+        mfs = [m_f_grid[i, j] for j in js]
+        ax.plot(ps, mfs, "-", lw=0.8, color=color, zorder=2)
+
+        for j in js:
+            if (i, j) in selected and (i, j) not in boundary:
+                ax.plot(pa[j], m_f_grid[i, j], "o", ms=6, color=color,
+                        markeredgecolor="k", markeredgewidth=0.5, zorder=4)
+            elif (i, j) not in boundary and (i, j) not in selected:
+                ax.plot(pa[j], m_f_grid[i, j], "o", ms=4, fillstyle="none",
+                        color=color, markeredgewidth=0.4, zorder=3)
+
+    sm = ScalarMappable(cmap=cmap, norm=norm)
+    cbar_ax = ax.figure.add_axes([0.88, 0.12, 0.02, 0.76])
+    ax.figure.colorbar(sm, cax=cbar_ax, label=r"$M/\mathrm{M}_\odot$")
+    ax.set_xlabel(r"$P/\mathrm{d}$")
+    ax.set_ylabel(r"$m_f/\mathrm{M}_\odot$")
+    ax.plot([], [], "o", ms=6, c="grey", markeredgecolor="k",
+            label="Selected interior")
+    ax.plot([], [], "o", ms=4, fillstyle="none", c="grey", label="Unselected")
+    ax.legend(fontsize=7, loc="upper left")
+
+
+def plot_budget_summary(ax, all_stats):
+    """Plot 5: stacked bar chart of budget breakdown."""
+    zs = [s["z_key"] for s in all_stats]
+    x = np.arange(len(zs))
+    w = 0.5
+    b = np.zeros(len(zs))
+    for key, label, color in [
+        ("n_boundary", "Boundary", "#1f77b4"),
+        ("n_interior", "Interior", "#ff7f0e"),
+    ]:
+        vals = [s[key] for s in all_stats]
+        ax.bar(x, vals, w, bottom=b, label=label, color=color)
+        b = [a + v for a, v in zip(b, vals)]
+
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"$Z/Z_\\odot={z}$" for z in zs], rotation=45,
+                       ha="right", fontsize=7)
+    ax.set_ylabel("N points")
+    ax.set_title("Budget allocation")
+    ax.legend(fontsize=7)
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def parse_args():
+    p = argparse.ArgumentParser(
+        description="Select sparse subsets of the dense 00_fiducial grid.")
+    p.add_argument("--fraction", type=float, required=True,
+                   help="Default fraction for both axes (e.g. 0.3)")
+    p.add_argument("--fraction-m", type=float, default=None,
+                   help="Override: fraction of masses to retain")
+    p.add_argument("--fraction-p", type=float, default=None,
+                   help="Override: fraction of interior periods per mass")
+    p.add_argument("--h5", default=DEFAULT_H5, help="Path to HDF5 file")
+    p.add_argument("--gap-neighbors", type=int, default=5,
+                   help="Min CHE neighbors (of 8) to fill a gap (default: 5)")
+    p.add_argument("--mono-threshold", type=float, default=1.0,
+                   help="Monotonicity violation threshold in Msun (default: 1.0)")
+    p.add_argument("--on-gaps", choices=["fill", "error"], default="fill",
+                   help="Gap handling mode (default: fill)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Print summary without writing files")
+    p.add_argument("--plot", action="store_true",
+                   help="Generate diagnostic plots")
+    p.add_argument("--plot-dir", default="./plots",
+                   help="Directory for plots (default: ./plots)")
+    p.add_argument("--verbose", action="store_true",
+                   help="Print per-Z details")
+    p.add_argument("--input-grid-type", choices=["complete", "map"],
+                   default="map",
+                   help="Type of input grid: 'map' (MS-only, default) "
+                        "or 'complete' (full evolution)")
+    return p.parse_args()
+
+
+def main():
+    args = parse_args()
+    fraction_m = args.fraction_m if args.fraction_m is not None else args.fraction
+    fraction_p = args.fraction_p if args.fraction_p is not None else args.fraction
+
+    for f, name in [(fraction_m, "fraction-m"), (fraction_p, "fraction-p")]:
+        if not (0 < f <= 1):
+            print(f"ERROR: --{name} must be in (0, 1]", file=sys.stderr)
+            sys.exit(1)
+
+    if not os.path.isfile(args.h5):
+        print(f"ERROR: HDF5 file not found: {args.h5}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Loading {args.h5} ...")
+    df = load_fiducial_data(args.h5, grid_type=args.input_grid_type)
+    mass_axis = np.array(sorted(df["m_zams"].unique()))
+    period_axis = np.array(sorted(df["p_spin_zams"].unique()))
+
+    l1_dirs = discover_l1_dirs()
+    if not l1_dirs:
+        print("ERROR: No L1 directories found. Run ./mk_grid first.",
+              file=sys.stderr)
+        sys.exit(1)
+
+    if args.plot:
+        import matplotlib
+        matplotlib.use("Agg")
+        matplotlib.rcParams['font.family'] = 'serif'
+        matplotlib.rcParams['mathtext.rm'] = 'serif'
+        matplotlib.rcParams['mathtext.it'] = 'serif:italic'
+        matplotlib.rcParams['mathtext.bf'] = 'serif:bold'
+        matplotlib.rcParams['mathtext.fontset'] = 'cm'
+        import matplotlib.pyplot as plt
+        plot_dir = Path(args.plot_dir)
+        plot_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        plt = None
+
+    all_stats = []
+    all_gaps_error = []
+
+    for z_float, z_key, l1_dir in l1_dirs:
+        df_z = df[df["z_key"] == z_key]
+        if df_z.empty:
+            print(f"WARNING: No HDF5 data for Z/Zsun={z_float} "
+                  f"(z_key={z_key}), skipping {l1_dir}")
+            continue
+
+        m_f_grid, che_mask, merger_mask, crash_mask, present_mask = \
+            build_grid_matrix(df_z, mass_axis, period_axis)
+        filled_mask, gap_set = fill_gaps(
+            che_mask, merger_mask, crash_mask, present_mask,
+            args.gap_neighbors)
+
+        if gap_set and args.on_gaps == "error":
+            for i, j in sorted(gap_set):
+                all_gaps_error.append((z_key, mass_axis[i], period_axis[j]))
+            continue
+
+        if gap_set and args.verbose:
+            print(f"  {len(gap_set)} gaps filled for Z/Zsun={z_key}")
+            for i, j in sorted(gap_set):
+                print(f"    M={mass_axis[i]:.0f}, P={period_axis[j]:.2f}")
+
+        total_mono, total_interp, iteration = 0, 0, 0
+        mono_set = set()
+        while True:
+            n_mono, new_mono = detect_monotonicity_gaps(
+                m_f_grid, filled_mask, threshold=args.mono_threshold)
+            mono_set |= new_mono
+            total_mono += n_mono
+            n_interp = interpolate_gap_mf(m_f_grid, filled_mask, mass_axis,
+                                          period_axis)
+            total_interp += n_interp
+            iteration += 1
+            if n_mono == 0:
+                break
+        if args.verbose and total_mono:
+            print(f"  Cleared {total_mono} monotonicity violations "
+                  f"(threshold={args.mono_threshold} Msun, "
+                  f"{iteration} iterations)")
+        if args.verbose and total_interp:
+            print(f"  Interpolated m_f at {total_interp} points")
+
+        mmax_gap_set = fill_mmax_gaps(filled_mask, args.gap_neighbors)
+        if mmax_gap_set:
+            gap_set |= mmax_gap_set
+            interpolate_gap_mf(m_f_grid, filled_mask, mass_axis, period_axis)
+            if args.verbose:
+                print(f"  M_max filled: {len(mmax_gap_set)} "
+                      f"(relaxed threshold)")
+
+        mass_weights, mass_mean_mf = compute_boundary_weights(
+            m_f_grid, filled_mask, mass_axis)
+        period_weights, period_mean_mf = compute_period_weights(
+            m_f_grid, filled_mask, mass_axis, period_axis)
+
+        selected, selected_masses, boundary, stats = select_points(
+            filled_mask, m_f_grid, mass_axis, period_axis,
+            mass_weights, period_weights, fraction_m, fraction_p)
+        stats["z_key"] = z_key
+        stats["z_float"] = z_float
+        stats["l1_dir"] = l1_dir
+        stats["n_gaps_selected"] = len(selected & gap_set)
+        stats["n_mono_selected"] = len(selected & mono_set)
+        all_stats.append(stats)
+
+        boundary_masses = [i for i in range(len(mass_axis))
+                           if any(filled_mask[i, j]
+                                  for j in range(len(period_axis)))]
+
+        if args.verbose:
+            print(f"\n  Z/Zsun={z_key} ({l1_dir}):")
+            print(f"    CHE domain:         {stats['n_che']}")
+            print(f"    Masses:             {stats['n_masses_selected']} / "
+                  f"{stats['n_masses_total']}")
+            print(f"    Boundary points:    {stats['n_boundary']}")
+            print(f"    Interior points:    {stats['n_interior']}")
+            print(f"    Total selected:     {stats['n_selected']}")
+            print(f"    Gaps in selection:  {stats['n_gaps_selected']}")
+            print(f"    Mono in selection:  {stats['n_mono_selected']}")
+            print(f"    Budget transfers:   {stats['n_transfers']}")
+            print(f"    Overlap enforced:   {stats['n_overlap_enforced']}")
+
+        extent = _che_extent(mass_axis, period_axis, filled_mask)
+
+        if not args.dry_run:
+            masses, _ = write_grid_files(
+                l1_dir, mass_axis, period_axis, selected)
+            n_files = 1 + len(masses)
+            print(f"  Wrote {n_files} files to {l1_dir}/ "
+                  f"({len(masses)} masses, {stats['n_selected']} models)")
+
+        if args.plot:
+            fig, ax = plt.subplots(figsize=(10, 7))
+            plot_domain(ax, mass_axis, period_axis, che_mask, merger_mask,
+                        crash_mask, present_mask, gap_set, mono_set,
+                        filled_mask)
+            ax.set_title(f"Domain classification — $Z/Z_\\odot = {z_key}$")
+            fig.tight_layout()
+            fig.savefig(plot_dir / f"domain_Z{z_key}.pdf")
+            plt.close(fig)
+
+            fig, ax = plt.subplots(figsize=(10, 7))
+            plot_mf_surface(ax, mass_axis, period_axis, m_f_grid,
+                            filled_mask, extent)
+            ax.set_title(f"Final mass surface — $Z/Z_\\odot = {z_key}$")
+            fig.tight_layout()
+            fig.savefig(plot_dir / f"mf_Z{z_key}.pdf")
+            plt.close(fig)
+
+            fig, ax = plt.subplots(figsize=(10, 7))
+            plot_selection_overlay(ax, mass_axis, period_axis, filled_mask,
+                                  selected, selected_masses, boundary,
+                                  mass_weights, period_weights, extent)
+            ax.set_title(f"Selection overlay — $Z/Z_\\odot = {z_key}$")
+            fig.tight_layout()
+            fig.savefig(plot_dir / f"selection_Z{z_key}.pdf")
+            plt.close(fig)
+
+            fig, ax = plt.subplots(figsize=(8, 6))
+            plot_boundary_weights(ax, mass_axis, mass_weights, mass_mean_mf,
+                                  selected_masses, boundary_masses)
+            ax.set_title(f"Boundary weights — $Z/Z_\\odot = {z_key}$")
+            fig.tight_layout()
+            fig.savefig(plot_dir / f"boundary_weights_Z{z_key}.pdf")
+            plt.close(fig)
+
+            fig, ax = plt.subplots(figsize=(12, 6))
+            plot_period_weights(ax, mass_axis, period_axis, m_f_grid,
+                                filled_mask, period_weights,
+                                selected, boundary)
+            ax.set_title(f"Period weights — $Z/Z_\\odot = {z_key}$")
+            fig.subplots_adjust(left=0.08, right=0.82)
+            fig.savefig(plot_dir / f"period_weights_Z{z_key}.pdf")
+            plt.close(fig)
+
+    if all_gaps_error:
+        print(f"\nERROR: {len(all_gaps_error)} gaps found with --on-gaps=error:")
+        for z_key, m, p in all_gaps_error:
+            print(f"  Z={z_key}, M={m:.0f}, P={p:.2f}")
+        sys.exit(1)
+
+    if not all_stats:
+        print("No metallicities processed.")
+        sys.exit(1)
+
+    if args.plot:
+        fig, ax = plt.subplots(figsize=(8, 5))
+        plot_budget_summary(ax, all_stats)
+        fig.tight_layout()
+        fig.savefig(plot_dir / "budget_summary.pdf")
+        plt.close(fig)
+
+    hdr = f"{'Z/Zsun':>8s}  {'CHE':>4s}  {'Mass':>7s}  {'Bnd':>4s}  " \
+          f"{'Int':>4s}  {'Tot':>4s}  {'Gap':>4s}  {'Mon':>4s}  " \
+          f"{'Xfr':>3s}  {'Ovl':>3s}"
+    print(f"\n{hdr}")
+    print("-" * len(hdr))
+    for s in all_stats:
+        print(f"{s['z_key']:>8s}  {s['n_che']:4d}  "
+              f"{s['n_masses_selected']:3d}/{s['n_masses_total']:<3d}  "
+              f"{s['n_boundary']:4d}  {s['n_interior']:4d}  "
+              f"{s['n_selected']:4d}  {s['n_gaps_selected']:4d}  "
+              f"{s['n_mono_selected']:4d}  {s['n_transfers']:3d}  "
+              f"{s['n_overlap_enforced']:3d}")
+
+    print(f"\nfraction_m={fraction_m:.2f}, fraction_p={fraction_p:.2f}")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,46 @@
+#!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/lib/common.sh"
+
+input_grid="z_div_zsun_grid"
+template_folder="ZdivZsun_template"
+
+PHYSICS_ID=$(get_physics_id)
+
+# One shared star binary per physics set; L3 dirs symlink to it.
+build_shared_star "$SCRIPT_DIR"
+
+counter=0
+printf "Creating metallicity grid\n"
+while read -r z_div_zsun; do
+    id=$(printf "%02d" "$counter")
+
+    if is_z_ignored "$z_div_zsun"; then
+        echo "Skipping ignored metallicity: $z_div_zsun (ID: $id)"
+        counter=$((counter+1))
+        continue
+    fi
+
+    z=$(echo "scale=8; $z_div_zsun * $ZSUN" | bc -l)
+    z_str=$(fortran_d "$z" "%.2e")
+    z_div_zsun_id=$(fortran_d "$z_div_zsun" "%.0e")
+    target_folder="${PHYSICS_ID}${id}_ZdivZsun_${z_div_zsun_id}"
+
+    ./cp_model "$template_folder" "$target_folder"
+    inlist_both="$target_folder/template/MESA_input_src/inlist_both"
+    patch_inline "$inlist_both" new_Z "${z_str}"
+    patch_inline "$inlist_both" Zbase "${z_str}"
+
+    # Uncomment to automatically generate the M, P grids for every metallicity:
+    # cd "$target_folder"
+    # ./mk_grid
+    # cd ..
+
+    printf "Wrote to %s\n" "$target_folder"
+    counter=$((counter+1))
+done < "$input_grid"
+
+./gen_diff
+printf "Finished writing metallicity grid\n"

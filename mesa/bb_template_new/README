@@ -1,0 +1,247 @@
+# CHE MESA Grid Template
+#
+# This is the clean template for setting up Z x M x P MESA grids for
+# chemically homogeneous evolution (CHE) studies. All models follow the
+# MESA physics defined in ZdivZsun_template/template/MESA_input_src/.
+
+# =====================================================================
+# QUICK START
+# =====================================================================
+#
+# 1. From sse_production/, copy this template to a new physics set:
+#      ./cp_grid bb_template_new NN_new_physics
+#
+# 2. Edit grid.conf (email, partitions, walltimes).
+#
+# 3. Edit MESA physics in ZdivZsun_template/template/MESA_input_src/:
+#      - inlist_both: shared physics (EOS, mixing, winds, stopping)
+#      - inlist1: per-model settings (mass, omega placeholders)
+#      - src/run_star_extras.f90: custom routines
+#    The top-level ./mk_grid compiles MESA_input_src once (star is rebuilt
+#    automatically if src/ or make/makefile is newer than star). MESA must
+#    be activated (mesa-24031) when running ./mk_grid.
+#
+# 4. Define your grid axes:
+#      - z_div_zsun_grid: metallicities as Z/Zsun (one per line)
+#      - z_ignore_grid: Z/Zsun values to skip (counter still increments)
+#      - ZdivZsun_template/mass_grid: ZAMS masses in Msun
+#      - ZdivZsun_template/period_grid: ZAMS spin periods in days
+#
+# 5. Generate the metallicity grid:
+#      ./mk_grid
+#    This creates one L1 folder per active Z. To also generate the
+#    M x P subgrid inside each, uncomment lines in mk_grid.
+#    Otherwise, run ./mk_grid inside each L1 folder individually.
+#
+# 6. Generate the full run list and dispatch:
+#      ./mk_batch_file     # writes run_grid
+#      ./dispatch_grid     # submits Slurm array jobs (cpu-single, one task
+#                          # per model, ARRAY_CONCURRENCY limit)
+#    Use --dry-run to generate scripts without submitting.
+#    Lists above MAX_ARRAY_TASKS are split into submit_grid_partN.slurm;
+#    submit part 0, then chain the rest:
+#      sbatch chain_submit.slurm --first-wait 0
+
+# =====================================================================
+# MAP GRID WORKFLOW (CHE window, main sequence only)
+# =====================================================================
+#
+# A dense M x P grid under map/ that only evolves models through the main
+# sequence, to map the CHE window cheaply. Models stop at center h1 <= 1d-6
+# or surface he4 >= 0.7, whichever comes first.
+#
+# - Physics: this set's MESA_input_src inlists with the c12 stopping
+#   condition replaced by the h1 one, approx21_cr56.net, and
+#   map_run_star_extras.f90 (next to mk_map_grid) as run_star_extras.
+# - Build: map/map_template/ gets its own compiled star; map L3 dirs
+#   symlink to it (inlist_both links to the per-L1 map copy, inlist1 is real).
+# - Grid: full ZdivZsun_template/mass_grid x period_grid for every
+#   non-ignored Z in z_div_zsun_grid.
+#
+# Steps (from the physics-set root, MESA activated):
+#
+# 1. Create the map grid (writes map/run_grid, map/grid.conf and links to
+#    ../dispatch_grid, ../lib, ../z_div_zsun_grid, ../z_ignore_grid):
+#      ./mk_map_grid --dry-run      # summary only
+#      ./mk_map_grid
+#
+# 2. Dispatch (no mk_batch_file step; run_grid already exists):
+#      cd map
+#      ./dispatch_grid [--dry-run]
+#    If the list was split into parts, submit part 0 and chain the rest:
+#      sbatch chain_submit.slurm --first-wait 0
+#
+# map/grid.conf takes GRID_EMAIL, MESA_ACTIVATE_CMD, SLURM_PARTITION_SINGLE
+# and MAX_ARRAY_TASKS from the parent grid.conf, and sets
+# CPUS_PER_TASK=8, ARRAY_WALLTIME=04:00:00, ARRAY_CONCURRENCY=120.
+# To rebuild, remove map/ first (mk_map_grid refuses to overwrite it).
+
+# =====================================================================
+# SPARSE GRID WORKFLOW
+# =====================================================================
+#
+# Runs only an optimally selected subset of (M, P) points per metallicity.
+# select_sparse_grid.py reads an HDF5 of core properties from an already
+# run grid, which can be either:
+#   (a) a complete grid (e.g. 00_fiducial), or
+#   (b) a map grid (see MAP GRID WORKFLOW).
+#
+# Both HDF5 types are built in the analysis repo
+# (/home/hd/hd_hd/hd_lt355/gpfs/hd_lt355-cher/repos/35peak_che) by
+# scripts/get_core_properties_v7.py, submitted via Slurm:
+#   (a) scripts/get_00_core_props.sh
+#       -> data/00_fiducial_core_props_df_v7.h5 (select_sparse_grid.py's
+#          default --h5)
+#   (b) scripts/get_01_map_core_props.sh (uses --map-grid, reads NN_set/map/)
+#       -> e.g. data/01_weakmix_core_props_df_map_v7.h5
+#
+# 1. Copy the template:
+#      cd sse_production/
+#      ./cp_grid bb_template_new NN_new_physics
+#      cd NN_new_physics
+#
+# 2. Edit grid.conf and MESA physics as for a full grid (QUICK START
+#    steps 2-4 above). For (b), the map grid usually lives in this same set
+#    (NN_new_physics/map/) and has already been run and processed.
+#
+# 3. Generate L1 metallicity folders (also compiles the shared star; MESA
+#    activated):
+#      ./mk_grid
+#
+# 4. Write per-L1 mass_grid and period_grid.{mass} override files
+#    (pyenv activate cher first):
+#      (a) ./select_sparse_grid.py --input-grid-type complete \
+#              --fraction 0.3 --plot --verbose
+#      (b) ./select_sparse_grid.py --input-grid-type map \
+#              --h5 /path/to/NN_..._core_props_df_map_v7.h5 \
+#              --fraction 0.3 --plot --verbose
+#    --input-grid-type defaults to map, and --h5 defaults to the 00_fiducial
+#    file, so pass both explicitly.
+#
+#    Options:
+#      --fraction F          Shared fraction for mass and period axes (required)
+#      --fraction-m F        Override mass fraction independently
+#      --fraction-p F        Override period fraction independently
+#      --h5 PATH             Input HDF5 (default: 00_fiducial_core_props_df_v7.h5)
+#      --input-grid-type T   complete | map (default: map). "complete" also
+#                            counts case A4 models as crashes
+#      --gap-neighbors N     CHE domain fill threshold (default 5)
+#      --mono-threshold T    Monotonicity enforcement tolerance in Msun (default 1.0)
+#      --on-gaps fill|error  Fill gaps (default), or skip Z bins with gaps and
+#                            exit 1 listing them (other Z bins are still written)
+#      --dry-run             Analyze without writing files
+#      --plot                Write diagnostic PDFs
+#      --plot-dir DIR        Plot directory (default ./plots)
+#      --verbose             Per-Z details
+#
+# 5. Remove L1 folders select_sparse_grid.py skipped (no HDF5 data for that
+#    Z, printed as "WARNING: No HDF5 data ..."). They still hold the full
+#    dense mass_grid/period_grid, so their mk_grid would build the complete
+#    M x P grid:
+#      for l1 in [0-9][0-9][0-9][0-9]_ZdivZsun_*; do
+#          [ -d "$l1" ] || continue
+#          if [ -z "$(find "$l1" -maxdepth 1 -name 'period_grid.[0-9]*' -print -quit)" ]; then
+#              rm -rf "$l1"
+#          fi
+#      done
+#    Do NOT re-run the top-level ./mk_grid after step 4: it re-copies the
+#    dense grid files into every L1 folder and overwrites the selection.
+#
+# 6. Generate L2/L3 subgrid in each remaining L1 folder (mk_grid picks up
+#    the sparse overrides automatically):
+#      for zdir in [0-9][0-9]*_ZdivZsun_*/; do (cd "$zdir" && ./mk_grid); done
+#
+# 7. Generate run list and dispatch:
+#      ./mk_batch_file
+#      ./dispatch_grid          # or --dry-run first
+#    Split lists: sbatch chain_submit.slurm --first-wait 0
+
+# =====================================================================
+# DIRECTORY STRUCTURE
+# =====================================================================
+#
+# Three-level grid hierarchy:
+#   L1: {PHYS}{ZZ}_ZdivZsun_{z_suffix}/    one per metallicity
+#   L2: {NNN}_m{mass}/                      one per ZAMS mass
+#   L3: m{mass}_p{period}_w{omega}/         one per spin period (model)
+#
+# Template hierarchy:
+#   ZdivZsun_template/                      L1 template
+#     template/                             L2 template
+#       MESA_input_src/                     L3 template (MESA work dir) and
+#                                           the set's single compiled star
+#
+# Thin L3 model dirs (no per-model compilation):
+#   inlist1, inlist_both                    real copies (inlist1 patched per model)
+#   LOGS/                                   real output dir
+#   star, rn, re, submit.sh, re_submit.sh,  symlinks ->
+#   inlist, inlist_pgstar,                    ../../../ZdivZsun_template/template/MESA_input_src/
+#   history_columns.list, profile_columns.list
+#
+# To rerun a single model by hand, submit from inside its L3 dir (the job
+# runs ./rn or ./re relative to the submit dir):
+#   cd <L1>/<L2>/<L3> && sbatch submit.sh      # fresh run
+#   cd <L1>/<L2>/<L3> && sbatch re_submit.sh   # restart from latest photo
+# No grid script calls submit.sh / re_submit.sh.
+# run_grid entries are "(cd L3 ; ./rn) &> L3.log". If you change src/ after
+# L3 dirs exist, rebuild once in ZdivZsun_template/template/MESA_input_src
+# (./mk) while no jobs are running; every model picks up the new binary.
+
+# =====================================================================
+# SCRIPTS
+# =====================================================================
+#
+# --- Grid creation ---
+# mk_grid             Generate L1 metallicity folders from z_div_zsun_grid
+# cp_model             Copy an L1 template to a new L1 folder
+# mk_batch_file        Generate run_grid from the existing L1/L2/L3 tree
+# dispatch_grid        Submit Slurm array jobs (auto-splits at 1000 tasks)
+# chain_submit.slurm   Submit split parts one after another (--tag grid|missing_grid)
+# gen_diff             Diff MESA inputs against a reference template
+# clean                Remove all generated L1 trees and artifacts
+#
+# --- Map grids ---
+# mk_map_grid          Build map/ (MS-only dense grid, own compiled star)
+# map_run_star_extras.f90  run_star_extras used by map grids
+#
+# --- Sparse grids ---
+# select_sparse_grid.py  Select optimal (M,P) subset per Z from a complete- or
+#                        map-grid HDF5; writes per-L1 mass_grid and
+#                        period_grid.{mass} overrides
+#
+# --- Gap-filling and restart ---
+# mk_missing_grid      Detect and create missing L3 models
+# dispatch_missing_grid Submit run_missing_grid via dispatch_grid (same array logic)
+# clean_missing_grid    Undo mk_missing_grid changes
+#
+# --- Monitoring ---
+# check_grid_completion.py   Classify models: COMPLETED/CRASHED/RUNNING/PENDING/STALLED
+# grid_outcome_summary.py    Classify by evolution: NON-CHE/MERGER/CHE + milestones
+# scan_grid_physics.sh       Verify Z/M/omega in inlists match folder paths
+# analyze_runtimes.py        Runtime statistics per Z, M
+# clean_history_data_all.py  Deduplicate/repair history.data after restarts
+#
+# --- Safety ---
+# permissions_tracker   Freeze/unfreeze grid dirs with sha256 tamper detection
+#
+# --- Configuration ---
+# grid.conf            Cluster settings (email, partition, walltime, nodes)
+#
+# --- Shared libraries ---
+# lib/common.sh        Shell functions: patch_inline, fortran_d, is_z_ignored,
+#                      get_physics_id, load_grid_conf, activate_mesa_snippet
+#
+# --- Archive ---
+# archive/             Older versions of scripts kept for reference
+
+# =====================================================================
+# CLUSTER NOTES
+# =====================================================================
+#
+# GPFS does not reliably store Unix exec bits. After git clone or cp_grid,
+# scripts may lose +x. Fix with:
+#   git update-index --chmod=+x <file>
+#   chmod +x <file>
+#
+# For heavy filesystem scans (check_grid_completion.py on 6720+ models),
+# use srun to run on a compute node rather than the login node.

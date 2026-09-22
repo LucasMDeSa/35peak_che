@@ -1,0 +1,68 @@
+# ==============================================================================
+# Track only the script/template structure of this grid directory.
+# Every MESA-produced artefact and every generated state file is ignored.
+# ==============================================================================
+
+# --- Archived code versions ---
+/archive/
+
+# --- Generated grid data (L1 trees) ---
+/[0-9][0-9][0-9][0-9]_ZdivZsun_*/
+
+# --- Slurm artefacts ---
+/logs/
+slurm-*.out
+slurm-*.err
+/slurm_missing.out
+/slurm_missing.err
+/slurm_grid_multi.out
+/slurm_grid_multi.err
+
+# --- Generated submission scripts ---
+submit_*.slurm
+
+# --- Generated reports / state files ---
+/PHYSICS_README
+/grid_status_report.txt
+/grid_runtime_statistics.txt
+/grid_physics_scan.txt
+/grid_physics_scan_summary.txt
+/grid_outcome_summary.txt
+/grid_outcome_detail.csv
+/status.csv
+/failed_models_to_delete.txt
+/managed_crashed_models.txt
+/running_models.txt
+/incomplete_models.txt
+/missing_models.log
+
+# --- Diagnostic plots ---
+/plots/
+
+# --- Generated run lists ---
+/run_grid
+/run_grid_part*
+/run_missing_grid
+
+# --- Permissions tracker state ---
+/permissions_tracker.state*
+
+# --- MESA build artefacts inside templates ---
+**/MESA_input_src/LOGS/
+**/MESA_input_src/photos/
+**/MESA_input_src/make/*.o
+**/MESA_input_src/make/*.mod
+**/MESA_input_src/make/*.smod
+**/MESA_input_src/star
+**/MESA_input_src/*.mod
+**/MESA_input_src/*.smod
+**/MESA_input_src/output.txt
+**/MESA_input_src/.mesa_temp_cache/
+
+# --- Editor / OS noise ---
+.DS_Store
+*.swp
+*~
+
+# --- Claude Code session metadata ---
+/.claude/

@@ -1,0 +1,5 @@
+#!/bin/bash
+set -euo pipefail
+rm -rf [0-9][0-9][0-9]_m*
+rm -f run_grid
+rm -f slurm*

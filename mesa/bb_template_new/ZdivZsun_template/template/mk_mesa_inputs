@@ -1,0 +1,22 @@
+#!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../../lib/common.sh"
+
+input_grid=$(tail -n +2 input_grid)
+grid_output="run_grid"
+
+for line in $input_grid; do
+    arr=(${line//,/ })
+    mass=(${arr[0]//e/d})
+    w=(${arr[1]//e/d})
+    p=(${arr[2]//e/d})
+    target_folder="m${mass}_p${p}_w${w}"
+    # Real inlist1/inlist_both; star, rn, re and static inputs symlinked
+    # to the shared build in ZdivZsun_template/template/MESA_input_src.
+    mk_thin_model_dir "MESA_input_src" "$target_folder" "${mass}" "${w}"
+    echo "(cd $target_folder ; ./rn) &> $target_folder.log" >> "$grid_output"
+
+    echo "Wrote MESA input for m=${mass} Msun, w=${w} rad/s"
+done

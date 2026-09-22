@@ -1,0 +1,40 @@
+# template — L2 (mass) template
+#
+# This folder is the template for each mass level within a metallicity.
+# The parent mk_grid copies this folder for each mass in mass_grid,
+# patches gen_grid_file with the mass value, then runs gen_grid_file
+# and mk_mesa_inputs to create the L3 model folders.
+#
+# Scripts:
+#   gen_grid_file   — Convert period_grid to input_grid CSV (mass, omega, period)
+#   mk_mesa_inputs  — Create L3 model folders from input_grid
+#   clean           — Remove all generated L3 folders and artifacts
+#
+# MESA_input_src/   — The MESA working directory template. Each L3 model
+#                     gets real copies of inlist1 (patched for the model's
+#                     mass and omega) and inlist_both, plus symlinks to the
+#                     shared build in the physics set's
+#                     ZdivZsun_template/template/MESA_input_src (star, rn, re,
+#                     submit.sh, re_submit.sh, inlist, inlist_pgstar,
+#                     history/profile_columns.list). submit.sh / re_submit.sh
+#                     are for manually rerunning one model (cd L3 && sbatch
+#                     submit.sh); no grid script calls them.
+#                     L1/L2 copies of this folder exclude build products.
+#
+#   Inlists:
+#     inlist           — Top-level loader (includes inlist1, inlist_both)
+#     inlist1          — Per-model settings (mass, omega; patched by mk_mesa_inputs)
+#     inlist_both      — Shared physics (EOS, mixing, winds, stopping, Z)
+#     inlist_pgstar    — Plotting configuration (disabled in production)
+#
+#   Column lists:
+#     history_columns.list  — MESA history output columns
+#     profile_columns.list  — MESA profile output columns
+#
+#   Build and run:
+#     src/run_star_extras.f90 — Custom wind, mixing, and stopping routines
+#     mk               — Compile run_star_extras.f90
+#     rn               — Run MESA (./star)
+#     re               — Restart from saved photo
+#     make/             — Makefile for compilation
+#     clean             — Remove build artifacts

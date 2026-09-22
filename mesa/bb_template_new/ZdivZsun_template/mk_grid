@@ -1,0 +1,42 @@
+#!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../lib/common.sh"
+
+input_grid="mass_grid"
+output_grid="run_grid"
+template_folder="template"
+template_folder_name="000_m20"
+: > "$output_grid"
+
+counter=000
+printf "Creating mass, period grid\n"
+while read -r mass; do
+    counter=$((counter+1))
+    id=$(printf "%03d" "$counter")
+    new_folder_name=$(echo "$template_folder_name" | sed -r "s/000/${id}/g" | sed -r "s/m20/m${mass}/g")
+    ./cp_model "$template_folder" "$new_folder_name"
+    if [ -f "period_grid.${mass}" ]; then
+        cp "period_grid.${mass}" "$new_folder_name/period_grid"
+    else
+        cp period_grid "$new_folder_name/"
+    fi
+
+    patch_inline "$new_folder_name/gen_grid_file" m "${mass}"
+
+    cd "$new_folder_name"
+    ./gen_grid_file
+    ./mk_mesa_inputs
+    cd ..
+
+    printf "Wrote grid for m=${mass} Msun\n"
+
+    shopt -s nullglob
+    model_folders=("$new_folder_name"/m*_p*_w*)
+    shopt -u nullglob
+    for folder in "${model_folders[@]}"; do
+        echo "(cd $folder ; ./rn) &> $folder.log" >> "$output_grid"
+    done
+done < "$input_grid"
+printf "Finished writing mass, period grid\n"

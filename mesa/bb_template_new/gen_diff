@@ -1,0 +1,24 @@
+#!/bin/bash
+set -euo pipefail
+
+REFERENCE_DIR="${1:-../bb_template_new}"
+output_file="PHYSICS_README"
+
+if [ ! -d "$REFERENCE_DIR" ]; then
+    echo "WARNING: reference directory $REFERENCE_DIR not found, skipping diff." >&2
+    echo "No reference directory found for physics diff." > "$output_file"
+    exit 0
+fi
+
+REF_SRC="$REFERENCE_DIR/ZdivZsun_template/template/MESA_input_src"
+LOCAL_SRC="./ZdivZsun_template/template/MESA_input_src"
+
+: > "$output_file"
+
+for f in inlist inlist1 inlist_both inlist_pgstar src/run_star_extras.f90 history_columns.list profile_columns.list; do
+    echo "Diff for $f" >> "$output_file"
+    echo "--------------------" >> "$output_file"
+    diff -u "$REF_SRC/$f" "$LOCAL_SRC/$f" >> "$output_file" 2>&1 || true
+    echo "====================" >> "$output_file"
+    echo "" >> "$output_file"
+done

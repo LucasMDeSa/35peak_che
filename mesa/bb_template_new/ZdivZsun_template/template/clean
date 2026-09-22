@@ -1,0 +1,7 @@
+#!/bin/bash
+set -euo pipefail
+rm -f input_grid run_grid
+rm -rf m*_p*_w*
+rm -f slurm*
+rm -f m*_w*.log
+rm -f period_grid

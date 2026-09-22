@@ -1,0 +1,30 @@
+#!/bin/bash
+# Submit the models listed in run_missing_grid (written by mk_missing_grid).
+# Same Slurm array logic as dispatch_grid: single-node partition, one task
+# per model, concurrency limit, auto-split above MAX_ARRAY_TASKS.
+#
+# Usage:
+#   ./dispatch_missing_grid              # submit
+#   ./dispatch_missing_grid --dry-run    # generate submit_missing_grid*.slurm only
+#
+# If the list was split into parts, chain them with:
+#   sbatch chain_submit.slurm --tag missing_grid [--first-wait N] [--last N]
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+RUN_LIST="run_missing_grid"
+
+if [ ! -f "$RUN_LIST" ]; then
+    echo "Error: '$RUN_LIST' not found."
+    echo "Please run ./mk_missing_grid first."
+    exit 1
+fi
+
+if [ "$(grep -cvE '^[[:space:]]*(#|$)' "$RUN_LIST")" -eq 0 ]; then
+    echo "No missing models found in $RUN_LIST."
+    exit 0
+fi
+
+exec "$SCRIPT_DIR/dispatch_grid" "$@" "$RUN_LIST"
