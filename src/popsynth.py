@@ -2669,3 +2669,246 @@ class FinalVarModelBackup:
                 np.nan,
             )
         return result
+
+
+# PopSynth User Class
+
+import os
+from functools import partial
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from tqdm import tqdm
+import numpy as np
+
+from src.popsynth import FinalVarModel, LinearCHEWindowMask, ConvexHullCHEWindowMask
+
+
+@dataclass(frozen=True)
+class SamplingConfig:
+    min_z_div_zsun: float = 0.0005
+    max_z_div_zsun: float = 1.0
+    m_min: float = 10.0  # Msun
+    m_max: float = 300.0  # Msun
+    q_min: float = 0.7
+    q_max: float = 1.0
+    p_min: float = 0.1 # d
+    p_max: float = 1e4  # d
+
+
+class PopSynth:
+
+    CPU_COUNT = os.cpu_count() or 1
+    T_H = 13768899116.929323  # t_H/yr
+
+    def __init__(
+        self,
+        core_props_df,
+        map_core_props_df=None,
+        ip_cut_non_he_depl=False,
+        title="new",
+        n_processes=None,
+        fallback_to_interpolator_for_logtd=False,
+        verbose=True,
+        plot_pymc_outputs=False,
+        dense_core_props_df=None,
+        correction_factors=("mi",),
+        extrapolate_z_islands=False,
+        interpolate_diagonals=False,
+    ):
+        self.core_props_df = core_props_df
+        self.map_core_props_df = map_core_props_df
+        self.ip_cut_non_he_depl = ip_cut_non_he_depl
+        self.title = title
+        self.n_processes = n_processes or self.CPU_COUNT
+        self.fallback_to_interpolator_for_logtd = fallback_to_interpolator_for_logtd
+        self.verbose = verbose
+        self.plot_pymc_outputs = plot_pymc_outputs
+        self.dense_core_props_df = dense_core_props_df
+        self.correction_factors = list(correction_factors)
+        self.extrapolate_z_islands = extrapolate_z_islands
+        self.interpolate_diagonals = interpolate_diagonals
+        self.models = {}  # var -> FinalVarModel, populated by fit()
+
+    def _make_che_mask_getter(self):
+        if self.dense_core_props_df is not None:
+            if self.verbose:
+                print("Building CHE mask from dense-grid convex hull...")
+            return ConvexHullCHEWindowMask(self.dense_core_props_df)
+        return LinearCHEWindowMask()
+
+    @staticmethod
+    def _resolve_model(var, requested_model):
+        """Analytical model only supports mass vars and log_t_d; fall back otherwise."""
+        if requested_model == "corrected":
+            return "corrected"
+        if requested_model == "analytical":
+            if ("core" not in var) and (var.startswith("m_") or var == "log_t_d"):
+                return "analytical"
+            else:
+                print(
+                    f"Variable '{var}' not supported by analytical model. Using interpolator."
+                )
+                return "interpolator"
+        return "interpolator"
+
+    def fit(self, vars, model="interpolator"):
+        """Instantiate and fit a FinalVarModel for each variable in vars.
+
+        Parameters
+        ----------
+        vars : list of str
+            Variables to fit models for (e.g. ['m_f', 'x_f', 'log_t_d']).
+        model : str
+            'interpolator', 'analytical', or 'corrected'. Analytical is silently
+            downgraded to interpolator for variables it cannot handle.
+            'corrected' requires dense_core_props_df to have been provided.
+        """
+        che_mask_getter = self._make_che_mask_getter()
+        for var in vars:
+            resolved = self._resolve_model(var, model)
+            if self.verbose:
+                print(f"Fitting '{var}' with model='{resolved}'...")
+            m = FinalVarModel(
+                core_props_df=self.core_props_df,
+                map_core_props_df=self.map_core_props_df,
+                var=var,
+                model=resolved,
+                che_mask_getter=che_mask_getter,
+                cut_non_he_depl=self.ip_cut_non_he_depl,
+                title=self.title,
+                n_processes=self.n_processes,
+                fallback_to_interpolator_for_logtd=self.fallback_to_interpolator_for_logtd,
+                verbose=self.verbose,
+                plot_pymc_outputs=self.plot_pymc_outputs,
+                dense_core_props_df=self.dense_core_props_df,
+                correction_factors=self.correction_factors,
+                extrapolate_z_islands=self.extrapolate_z_islands,
+                interpolate_diagonals=self.interpolate_diagonals,
+            )
+            m.fit()
+            self.models[var] = m
+
+    def predict(self, job, var, apply_che_mask=True):
+        """Run prediction for a single variable on a job array.
+
+        Parameters
+        ----------
+        job : np.ndarray, shape (n, 3+)
+            Columns: [metallicity, m_zams, p_spin_zams, ...]
+        var : str
+            Variable to predict. Must have been fitted via fit().
+        apply_che_mask : bool
+        """
+        if var not in self.models:
+            raise ValueError(
+                f"No fitted model for '{var}'. Call fit(['{var}', ...]) first."
+            )
+        return self.models[var].predict(job, apply_che_mask=apply_che_mask)
+
+    def parallel_set_sample_var(self, sample, var, var_col_i, apply_che_mask=True):
+        run_job = partial(self.predict, var=var, apply_che_mask=apply_che_mask)
+
+        split_indices = np.array_split(np.arange(len(sample)), self.n_processes)
+        jobs = [sample[idx] for idx in split_indices]
+
+        with ProcessPoolExecutor(max_workers=self.n_processes) as executor:
+            futures = {
+                executor.submit(run_job, job): job_index
+                for job_index, job in enumerate(jobs)
+            }
+            for future in tqdm(
+                as_completed(futures), total=len(futures), desc=f"Collecting {var}"
+            ):
+                job_index = futures[future]
+                try:
+                    result = future.result()
+                except Exception as e:
+                    print(f"Error in job {job_index}: {e}")
+                    continue
+                sample[split_indices[job_index], var_col_i] = result
+
+        return sample
+
+    def draw_pop(
+        self,
+        vars: list[str],
+        apply_che_mask: bool = True,
+        metallicity: str = "loguniform",
+        redshift: float = 1.0,
+        res: int = int(1e8),
+        write_to_disk: bool = False,
+        sampling_config: SamplingConfig = SamplingConfig(),
+    ):
+        unfitted = [v for v in vars if v not in self.models]
+        if unfitted:
+            raise ValueError(
+                f"No fitted model for variables: {unfitted}. Call fit() first."
+            )
+
+        n_sample = res // 100
+
+        sample_masses = np.linspace(sampling_config.m_min, sampling_config.m_max, res)
+        sample_probs = sample_masses**-2.3 / np.sum(sample_masses**-2.3)
+        sample_masses = np.random.choice(sample_masses, p=sample_probs, size=n_sample)
+
+        sample_periods = np.linspace(
+            np.log10(sampling_config.p_min), np.log10(sampling_config.p_max), res
+        )
+        sample_periods = 10.0 ** np.random.choice(sample_periods, size=n_sample)
+
+        if isinstance(metallicity, (int, float)):
+            sample_zs = np.tile(metallicity, n_sample)
+        elif metallicity == "loguniform":
+            sample_zs = np.linspace(
+                np.log10(sampling_config.min_z_div_zsun),
+                np.log10(sampling_config.max_z_div_zsun),
+                res,
+            )
+            sample_zs = 10.0 ** np.random.choice(sample_zs, size=n_sample)
+        elif metallicity == "realistic":
+            dpdlogz = get_metallicity_distribution_ip(redshift)
+            sample_zs = np.linspace(
+                np.log10(sampling_config.min_z_div_zsun),
+                np.log10(sampling_config.max_z_div_zsun),
+                res,
+            )
+            sample_probs = dpdlogz(sample_zs) / np.sum(dpdlogz(sample_zs))
+            sample_zs = 10.0 ** np.random.choice(
+                sample_zs, p=sample_probs, size=n_sample
+            )
+        else:
+            raise ValueError(
+                f"Options for metallicity are a fixed value (int/float), 'loguniform', or 'realistic'. Got '{metallicity}'."
+            )
+
+        sample = np.array(
+            [sample_zs, sample_masses, sample_periods, *np.zeros((len(vars), n_sample))]
+        ).T
+
+        for i_var, var in enumerate(vars):
+            sample = self.parallel_set_sample_var(
+                sample=sample,
+                var=var,
+                var_col_i=i_var + 3,
+                apply_che_mask=apply_che_mask,
+            )
+
+        msample = sample[sample[:, -1] <= np.log10(self.T_H)].copy()
+
+        if write_to_disk:
+            self.save_sample_msample(
+                sample,
+                msample,
+                min_zdivzsun=sampling_config.min_z_div_zsun,
+                max_zdivzsun=sampling_config.max_z_div_zsun,
+                res=res,
+            )
+
+        return sample, msample
+
+    def save_sample_msample(self, sample, msample, min_zdivzsun, max_zdivzsun, res):
+        tag = f"ip_pop_minz{min_zdivzsun}_maxz{max_zdivzsun}_res{res:.0e}_{self.title}"
+        np.save(DATA_DIR / f"{tag}.npy", sample)
+        print(f'Saved {len(sample)} stars to {DATA_DIR / f"{tag}.npy"}')
+        np.save(DATA_DIR / f"{tag}_mergers_only.npy", msample)
+        print(f'Saved {len(msample)} mergers to {DATA_DIR / f"{tag}_mergers_only.npy"}')
+        return
