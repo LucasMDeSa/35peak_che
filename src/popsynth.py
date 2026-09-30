@@ -1992,7 +1992,7 @@ class PMZWindPileupModel:
             .values
         )
         mi_arr, pi_arr, mf_arr, z_arr, log_t_d_arr = extracted_array.T
-        ai_arr = a_from_p(pi_arr, mi_arr, self.fixed_q).value  # rsun
+        ai_arr = a_from_p(pi_arr, mi_arr, self.fixed_q)  # rsun
         return mi_arr, pi_arr, ai_arr, mf_arr, z_arr, log_t_d_arr
 
     @property

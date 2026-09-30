@@ -45,7 +45,7 @@ def marchant_l2_radius(a, q):
 def is_of(r, m, p, q=1, kind="RL"):
     a = a_from_p(p, m, q)
     if kind == "merger":
-        of_a = a.to(u.Rsun).value
+        of_a = a
     elif kind == "RL":
         of_a = eggleton_rl1_radius(a, q).to(u.Rsun).value
     elif kind == "L2":
@@ -85,7 +85,7 @@ def p_from_a(a, m, q):
     a = fix_unit(a, SMA_U)
     m = fix_unit(m, MASS_U)
     p = np.sqrt(4 * np.pi**2 / (ct.G * (1 + q) * m) * a**3)
-    p = p.to(PERIOD_U)
+    p = p.to(PERIOD_U).value
     return p
 
 
@@ -93,7 +93,7 @@ def a_from_p(p, m, q):
     p = fix_unit(p, PERIOD_U)
     m = fix_unit(m, MASS_U)
     a = np.cbrt(ct.G * (1 + q) * m / (4 * np.pi**2) * p**2)
-    a = a.to(SMA_U)
+    a = a.to(SMA_U).value
     return a
 
 
@@ -122,27 +122,11 @@ class WindIntegrator:
         self.p0 = 2 * np.pi / self.w0 * u.s.to(u.d)
         self.q0 = q0
 
-    @staticmethod
-    def a_from_p(p, m, q):
-        p = fix_unit(p, u.d)
-        m = fix_unit(m, u.Msun)
-        a = np.cbrt(ct.G * (1 + q) * m / (4 * np.pi**2) * p**2)
-        a = a.to(u.Rsun).value
-        return a
-
-    @staticmethod
-    def p_from_a(a, m, q):
-        a = fix_unit(a, u.Rsun)
-        m = fix_unit(m, u.Msun)
-        p = np.sqrt(4 * np.pi**2 / (ct.G * (1 + q) * m) * a**3)
-        p = p.to(u.d).value
-        return p
-
     def integrate(self, t_target):
         m = self.h.star_mass[0]
         p = self.p0
         q = self.q0
-        a = self.a_from_p(p, m, q)
+        a = a_from_p(p, m, q)
 
         i = 0
         t0 = self.time[i]
@@ -156,7 +140,7 @@ class WindIntegrator:
             m += dm
             a += da
             q += dq
-            p = self.p_from_a(a, m, q)
+            p = p_from_a(a, m, q)
 
             i += 1
             try:
@@ -183,26 +167,10 @@ class SV20WindIntegrator:
         self.dm = dm
         self.teff = teff
         self.z = z
-        self.p0 = p_from_a(self.a0, self.m0, self.q0).to(u.d).value
+        self.p0 = p_from_a(self.a0, self.m0, self.q0)
         self.w0 = 2 * np.pi / (self.p0 * u.d.to(u.s))
         self.x = x
         self.l0 = grafener_m_to_l_h_burning(self.m0, x=x)
-
-    @staticmethod
-    def a_from_p(p, m, q):
-        p = fix_unit(p, u.d)
-        m = fix_unit(m, u.Msun)
-        a = np.cbrt(ct.G * (1 + q) * m / (4 * np.pi**2) * p**2)
-        a = a.to(u.Rsun).value
-        return a
-
-    @staticmethod
-    def p_from_a(a, m, q):
-        a = fix_unit(a, u.Rsun)
-        m = fix_unit(m, u.Msun)
-        p = np.sqrt(4 * np.pi**2 / (ct.G * (1 + q) * m) * a**3)
-        p = p.to(u.d).value
-        return p
 
     def integrate(self, t_target):
         t_target = min(t_target, self.tau_ms)
@@ -232,7 +200,7 @@ class SV20WindIntegrator:
             m += dm
             a += da
             q += dq
-            p = self.p_from_a(a, m, q)
+            p = p_from_a(a, m, q)
             l = grafener_m_to_l_h_burning(m, x=self.x)
 
             i += 1

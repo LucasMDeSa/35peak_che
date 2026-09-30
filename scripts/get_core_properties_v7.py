@@ -31,7 +31,7 @@ import sys
 
 sys.path.append("..")
 from src.util import MESA_DATA_DIR, DATA_DIR, load_models2
-from src.binary import WindIntegrator, unitless_coalescence_time, is_of
+from src.binary import WindIntegrator, unitless_coalescence_time, is_of, a_from_p
 from src.star import get_moment_of_inertia
 from src.constants import CLIGHT_CGS, STANDARD_CGRAV_CGS, MSUN_TO_CGS, DAY_TO_CGS
 
@@ -597,7 +597,7 @@ def get_props(h, logs, stage_i, stage, wi, m_stage, p_spin_stage, prof_stage=Non
     age_prof_stage = prof_stage.star_age
     if stage == "zams":
         p_orb_stage = p_spin_stage
-        a_stage = WindIntegrator.a_from_p(p_orb_stage, m_stage, 1)
+        a_stage = a_from_p(p_orb_stage, m_stage, 1)
     else:
         _m_stage, p_orb_stage, a_stage, _qstage, _t_stage = wi.integrate(age_hist_stage)
 

@@ -20,6 +20,7 @@ import sys
 sys.path.append("..")
 from src.util import DATA_DIR
 from src.constants import Z_SUN
+from src.binary import unitless_coalescence_time
 from src.popsynth import SamplingConfig, PopSynth, get_complete_core_props_df
 
 IP_POP_DIR = DATA_DIR / "output" / "ip_pop"
@@ -91,6 +92,15 @@ def get_post_pi_mass(sample_df, config, mass_th_col="m_cocore_tahems", metallici
     print(f"len total: {stable_mask.sum() + ppsin_mask.sum() + pisn_mask.sum() + photodisintegration_mask.sum()}")
     return sample_df
 
+def get_post_pi_log_td(sample_df):
+    """For a sample_df already containing m_post_pi, recomputes and replaces log_t_d."""
+    if "m_post_pi" not in sample_df.columns:
+        raise ValueError("sample_df must contain 'm_post_pi' column")
+
+    a_f = 
+    t_c = unitless_coalescence_time(sample_df.m_f, sample_df.
+
+    return sample_df
 
 def get_sample_df(
     core_props_df,
