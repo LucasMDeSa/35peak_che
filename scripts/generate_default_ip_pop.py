@@ -20,7 +20,7 @@ import sys
 sys.path.append("..")
 from src.util import DATA_DIR
 from src.constants import Z_SUN
-from src.binary import unitless_coalescence_time
+from src.binary import unitless_coalescence_time, a_from_p
 from src.popsynth import SamplingConfig, PopSynth, get_complete_core_props_df
 
 IP_POP_DIR = DATA_DIR / "output" / "ip_pop"
@@ -92,13 +92,18 @@ def get_post_pi_mass(sample_df, config, mass_th_col="m_cocore_tahems", metallici
     print(f"len total: {stable_mask.sum() + ppsin_mask.sum() + pisn_mask.sum() + photodisintegration_mask.sum()}")
     return sample_df
 
-def get_post_pi_log_td(sample_df):
+def get_post_pi_log_t_d(sample_df):
     """For a sample_df already containing m_post_pi, recomputes and replaces log_t_d."""
     if "m_post_pi" not in sample_df.columns:
         raise ValueError("sample_df must contain 'm_post_pi' column")
 
-    a_f = 
-    t_c = unitless_coalescence_time(sample_df.m_f, sample_df.
+    # we ignore orbital changes due to ppi, so the separation is computed from m_f instead of m_post_pi
+    a_f = a_from_p(sample_df.p_orb_f.to_numpy(copy=True), sample_df.m_f.to_numpy(copy=True), q=1.)
+    t_c = unitless_coalescence_time(sample_df.m_post_pi.to_numpy(copy=True), a_f, q=1.)
+    # catch pisne
+    t_c[sample_df.m_post_pi < 1e-1] = np.inf
+    t_d = t_c + sample_df.age_hist_f.to_numpy(copy=True)
+    sample_df['log_t_d'] = np.log10(t_d)
 
     return sample_df
 
@@ -132,9 +137,10 @@ def get_sample_df(
         "p_orb_f",
         "x_f",
         "x_min_f",
-        "m_tams",
-        "x_tams",
-        "log_t_d",
+        #"m_tams",
+        #"x_tams",
+        #"log_t_d",
+        "age_hist_f",
         ppi_mass_th_col,
     ]
     vars_index_dict = {var: i for i, var in enumerate(vars)}
@@ -183,6 +189,7 @@ def get_sample_df(
     sample_df = get_post_pi_mass(
         sample_df, config=ppisn_config, metallicity_multiplier=delta_ppi_metallicity_multiplier
     )
+    sample_df = get_post_pi_log_t_d(sample_df)
 
     sample_df.to_hdf(sample_df_path, key="df", mode="w", index=False)
     print(f"Saved sample dataframe: {sample_df_path}")
