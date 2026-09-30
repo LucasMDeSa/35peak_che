@@ -13,3 +13,4 @@ notebooks/
 data/output
 backups/
 development_notebooks/output/
+development_notebooks/tmp/
